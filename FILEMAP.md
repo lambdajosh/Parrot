@@ -8,7 +8,7 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 | File | L | Purpose |
 |---|---|---|
 | `Parrot/ParrotApp.swift` | 112 | `@main`; parses CLI harness flags before the SwiftUI `App` starts |
-| `Parrot/ProfileTest.swift` | 363 | `--profile-test`: headless logic harness, ~60 assertions |
+| `Parrot/ProfileTest.swift` | 951 | `--profile-test`: headless logic harness, ~60 assertions |
 | `Parrot/SnapshotTool.swift` | 522 | Offscreen PNG renderers + transcribe/analyze harnesses |
 
 ## Models (SwiftData `@Model` + Codable values)
@@ -28,7 +28,7 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 
 | File | L | Purpose |
 |---|---|---|
-| `Services/RecordingManager.swift` | 623 | Orchestrates a recording session end-to-end; the hub |
+| `Services/RecordingManager.swift` | 714 | Orchestrates a recording session end-to-end; the hub |
 | `Services/AudioCaptureManager.swift` | 700 | System audio (tap on 15+, SCK on 14.x/rescue) + mic tap, buffer conversion |
 | `Services/SystemAudioTap.swift` | 250 | Core Audio process tap: audio-only capture, no Screen Recording (macOS 15+) |
 | `Services/EchoCanceller.swift` | 138 | Swift wrapper over vendored SpeexDSP AEC |
@@ -41,7 +41,7 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 | `Services/KnowledgeBaseService.swift` | 251 | Ingests/chunks KB docs, retrieves context for prompts |
 | `Services/ProfileStore.swift` | 101 | Persists and mutates `CallProfile`s |
 | `Services/ProfilePresets.swift` | 141 | Built-in starter profiles |
-| `Services/ExportService.swift` | 127 | Transcript/report export (Markdown, text) |
+| `Services/ExportService.swift` | 199 | Transcript/report export (TXT, SRT) + configurable export folder |
 | `Services/PermissionFlow.swift` | 150 | System Audio (15+) / Screen Recording (14) + microphone grant flows |
 | `Services/UpdateChecker.swift` | 103 | Daily GitHub release poll, feeds the update banner |
 | `Services/BugReport.swift` | 120 | Pre-filled GitHub issue: diagnostics, own-window screenshot, URL builder |
@@ -60,12 +60,12 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 | `Views/BugReportSheet.swift` | 150 | Bug/idea report form + the corner ladybug button |
 | `Views/ReportContentView.swift` | 267 | Report section cards, talk-ratio bar, prose blocks |
 | `Views/SentimentStripView.swift` | 60 | Sentiment gauge strip |
-| `Views/SettingsView.swift` | 829 | All settings sections, provider keys, KB docs |
+| `Views/SettingsView.swift` | 872 | All settings sections, provider keys, KB docs |
 | `Views/ProfilesSettingsView.swift` | 689 | Call-profile editor: kinds, gauges, icon picker |
 | `Views/OnboardingView.swift` | 340 | Permission walkthrough + model choice |
 | `Views/OllamaModelStatusView.swift` | 136 | Local model presence/pull status |
 | `Views/AudioImport.swift` | 108 | Drag-drop / file import of existing audio |
-| `Views/AppCommands.swift` | 240 | `AppSession`, menu commands, context menus, notifications |
+| `Views/AppCommands.swift` | 252 | `AppSession`, menu commands, context menus, notifications |
 | `Views/MenuBarView.swift` | 59 | Menu bar extra |
 | `Views/Theme.swift` | 151 | Single source of colors, fonts, metrics |
 

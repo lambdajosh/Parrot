@@ -133,8 +133,29 @@ final class RecordingManager {
             await generateSummary(meeting: meeting)
         }
         writeAIUsage(meeting: meeting, polishSeconds: 0)
+        markDone(meeting)
+    }
+
+    /// The last step of every post-call chain (stop, import, crash recovery):
+    /// flips `.done`, then honors the auto-save toggle. Auto-save lives only
+    /// here so the file always carries the final diarized speaker labels and
+    /// the report when one was generated, never a transcript still in flux.
+    private func markDone(_ meeting: Meeting) {
         meeting.status = .done
         try? modelContext?.save()
+        autoSaveTranscript(meeting)
+    }
+
+    private func autoSaveTranscript(_ meeting: Meeting) {
+        guard UserDefaults.standard.bool(forKey: TranscriptExportLocation.autoSaveKey),
+              !meeting.segments.isEmpty else { return }
+        do {
+            _ = try ExportService.saveTXT(meeting: meeting)
+        } catch {
+            // Best-effort: the transcript is already in the database, and the
+            // manual Export menu still works. Don't fail a good meeting over it.
+            NSLog("Parrot: transcript auto-save failed: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Recording Control
@@ -296,8 +317,7 @@ final class RecordingManager {
                 }
                 // Last in the chain so the meter has seen the summary/coaching calls too.
                 self.writeAIUsage(meeting: meetingRef, polishSeconds: polishSeconds)
-                meetingRef.status = .done
-                try? self.modelContext?.save()
+                self.markDone(meetingRef)
             }
         }
 
@@ -399,8 +419,7 @@ final class RecordingManager {
             await generateSummary(meeting: meeting, includeCoaching: false)
         }
         writeAIUsage(meeting: meeting, polishSeconds: 0, backendOverride: .local)
-        meeting.status = .done
-        try? modelContext?.save()
+        markDone(meeting)
     }
 
     // MARK: - Deletion

@@ -67,6 +67,10 @@ struct SettingsView: View {
     @AppStorage(TranscriptionBackend.defaultsKey) private var transcriptionBackend = TranscriptionBackend.local.rawValue
     @AppStorage("polishAfterCall") private var polishAfterCall = false
     @AppStorage("livePreview") private var livePreview = true
+    @AppStorage(TranscriptExportLocation.autoSaveKey) private var autoSaveTranscripts = false
+    /// Mirrors the bookmark in UserDefaults so the row redraws after a pick.
+    @State private var transcriptDirectory = TranscriptExportLocation.directory()
+    @State private var showTranscriptFolderPicker = false
     @State private var section: SettingsSection = .general
     @State private var diarizerDownloading = false
     @AppStorage("rememberVoices") private var rememberVoices = false
@@ -95,7 +99,7 @@ struct SettingsView: View {
     private var settingsFingerprint: String {
         "\(selectedModel)|\(appearance)|\(copilotEnabled)|\(transcriptionLanguage)|"
             + "\(customVocabulary)|\(echoCancellation)|\(transcriptionBackend)|\(polishAfterCall)|"
-            + "\(copilotPace)|\(copilotWindow)|\(livePreview)"
+            + "\(copilotPace)|\(copilotWindow)|\(livePreview)|\(autoSaveTranscripts)|\(transcriptDirectory)"
     }
 
     private func flashSavedToast() {
@@ -198,6 +202,29 @@ struct SettingsView: View {
                 Button("Show in Finder") {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
                 }
+
+                LabeledContent("Transcripts") {
+                    Text(transcriptDirectory.path)
+                        .font(Theme.Typography.secondary)
+                        .foregroundStyle(Theme.Colors.ink2)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                HStack(spacing: 6) {
+                    Button("Choose Folder…") { showTranscriptFolderPicker = true }
+                    if TranscriptExportLocation.isCustom() {
+                        Button("Use Downloads") {
+                            try? TranscriptExportLocation.set(nil)
+                            transcriptDirectory = TranscriptExportLocation.directory()
+                        }
+                        .buttonStyle(.link)
+                        .font(Theme.Typography.secondary)
+                    }
+                }
+
+                Toggle("Save a transcript here after each call", isOn: $autoSaveTranscripts)
+                Hint("Writes a TXT once transcription and speaker detection have finished. Right-click a meeting → Export to save one any time.")
             }
 
             Section("About") {
@@ -227,6 +254,22 @@ struct SettingsView: View {
                         .buttonStyle(.link)
                         .font(Theme.Typography.secondary)
                 }
+            }
+        }
+        .fileImporter(
+            isPresented: $showTranscriptFolderPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            // The picked URL carries a one-run grant; `set` turns it into a
+            // bookmark so exports keep landing there after a relaunch.
+            if case .success(let urls) = result, let url = urls.first {
+                do {
+                    try TranscriptExportLocation.set(url)
+                } catch {
+                    NSLog("Parrot: couldn't bookmark transcript folder: \(error.localizedDescription)")
+                }
+                transcriptDirectory = TranscriptExportLocation.directory()
             }
         }
     }

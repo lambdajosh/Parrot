@@ -22,7 +22,8 @@ extension Notification.Name {
 // MARK: - Shared meeting actions
 
 /// Menu-invokable actions on a meeting, shared by the main menu, context menus,
-/// and the detail toolbar. Exports write to Downloads and reveal in Finder.
+/// and the detail toolbar. Exports write to the transcript folder from
+/// Settings → General → Storage (Downloads by default) and reveal in Finder.
 @MainActor
 enum MeetingActions {
     nonisolated static let repoURL = "https://github.com/turantekin/Parrot"
@@ -36,7 +37,7 @@ enum MeetingActions {
     }
 
     private static func write(_ content: String, for meeting: Meeting, ext: String) {
-        let filename = meeting.title.replacingOccurrences(of: " ", with: "_")
+        let filename = ExportService.filename(for: meeting)
         if let url = try? ExportService.save(content: content, filename: filename, extension: ext) {
             NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
         }

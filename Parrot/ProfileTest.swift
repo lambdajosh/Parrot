@@ -41,6 +41,7 @@ enum ProfileTest {
         testSpeakerNames()
         testVoiceProfiles()
         testTranscriptTruncate()
+        testExportLocation()
         print(failures == 0 ? "ALL PASS" : "FAILURES: \(failures)")
         exit(failures == 0 ? 0 : 1)
     }
@@ -750,6 +751,48 @@ enum ProfileTest {
               m.truncationNote?.contains("after 00:00") == true)
         check("note singularizes one line",
               Meeting.noteLines(1) == "1 line" && Meeting.noteLines(2) == "2 lines")
+    }
+
+    // Settings → General → Storage: the transcript folder is a security-scoped
+    // bookmark that falls back to Downloads, and `save` honors it.
+    static func testExportLocation() {
+        let suite = "parrot-export-location-test"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let downloads = TranscriptExportLocation.downloads
+
+        check("export: unset falls back to Downloads",
+              TranscriptExportLocation.directory(defaults: defaults) == downloads
+                && !TranscriptExportLocation.isCustom(defaults: defaults))
+
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("parrot-export-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let stored = (try? TranscriptExportLocation.set(folder, defaults: defaults)) != nil
+        let resolved = TranscriptExportLocation.directory(defaults: defaults)
+        check("export: picked folder round-trips through the bookmark",
+              stored && resolved.resolvingSymlinksInPath().path == folder.resolvingSymlinksInPath().path
+                && TranscriptExportLocation.isCustom(defaults: defaults))
+
+        // The writer lands in the chosen folder and never overwrites a prior export.
+        let first = try? ExportService.save(content: "a", filename: "Call/1", extension: "txt", directory: resolved)
+        let second = try? ExportService.save(content: "b", filename: "Call/1", extension: "txt", directory: resolved)
+        check("export: save lands in the chosen folder with a safe name",
+              first?.lastPathComponent == "Call-1.txt"
+                && first?.deletingLastPathComponent().resolvingSymlinksInPath().path
+                    == folder.resolvingSymlinksInPath().path)
+        check("export: same title never overwrites", second?.lastPathComponent == "Call-1 (2).txt")
+
+        // A folder that vanished must not strand exports: back to Downloads.
+        try? FileManager.default.removeItem(at: folder)
+        check("export: missing folder falls back to Downloads",
+              TranscriptExportLocation.directory(defaults: defaults) == downloads)
+
+        try? TranscriptExportLocation.set(nil, defaults: defaults)
+        check("export: reset clears the bookmark", !TranscriptExportLocation.isCustom(defaults: defaults))
     }
 
     static func testDiarizedLabel() {

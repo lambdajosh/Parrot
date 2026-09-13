@@ -40,7 +40,7 @@ If you find this useful or just think the idea is cool, give it a star. It'll ma
 - **Playback synced with the transcript** — Click a transcript line, hear that moment
 - **Import existing recordings** — Drop an audio file (m4a, mp3, wav, aac…) onto the app and it's transcribed, diarized, and summarized like any live meeting
 - **Doesn't lose your meeting** — If the app crashes or gets force-quit mid-call, the recording is recovered with its transcript and reports on next launch. AirPods dying mid-call no longer kill the mic either
-- **Searchable history, export, menu bar extra, dark mode** — Meetings stored locally, TXT/SRT export, quick start/stop from the menu bar
+- **Searchable history, export, menu bar extra, dark mode** — Meetings stored locally, TXT/SRT export to a folder you choose (optionally automatic after each call), quick start/stop from the menu bar
 
 ## Tech Stack
 
