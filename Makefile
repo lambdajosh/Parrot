@@ -50,6 +50,16 @@ ifeq ($(strip $(SIGN_IDENTITY)),)
 SIGN_IDENTITY := -
 endif
 
+# Hardened runtime enforces library validation, which an ad-hoc signature can
+# never satisfy: with no Team ID, the app and the bundled Sparkle framework
+# count as "different teams" and dyld kills the app at launch. Harden only
+# team-signed builds; release.sh always signs with a real identity.
+ifeq ($(SIGN_IDENTITY),-)
+HARDENED :=
+else
+HARDENED := --options runtime
+endif
+
 .DEFAULT_GOAL := app
 
 .PHONY: help
@@ -151,8 +161,8 @@ bundle: build
 		"$(APP)/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate" \
 		"$(APP)/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app" \
 		"$(APP)/Contents/Frameworks/Sparkle.framework"; do \
-		codesign --force --options runtime --timestamp=none --sign "$(SIGN_IDENTITY)" "$$nested" || exit 1; done
-	codesign --force --options runtime --timestamp=none \
+		codesign --force $(HARDENED) --timestamp=none --sign "$(SIGN_IDENTITY)" "$$nested" || exit 1; done
+	codesign --force $(HARDENED) --timestamp=none \
 		--entitlements Parrot/Parrot.entitlements \
 		--sign "$(SIGN_IDENTITY)" $(APP)
 	@# --deep on verify (not sign) walks nested code and fails loudly if any
