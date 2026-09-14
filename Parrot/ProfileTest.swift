@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import SwiftData
+import AVFoundation
 
 /// Offscreen logic harness. Run: `.build/debug/Parrot --profile-test`
 /// Prints PASS/FAIL per check and exits non-zero on any failure.
@@ -42,6 +43,8 @@ enum ProfileTest {
         testVoiceProfiles()
         testTranscriptTruncate()
         testExportLocation()
+        testMeetingSplit()
+        testAudioSplitter()
         print(failures == 0 ? "ALL PASS" : "FAILURES: \(failures)")
         exit(failures == 0 ? 0 : 1)
     }
@@ -793,6 +796,126 @@ enum ProfileTest {
 
         try? TranscriptExportLocation.set(nil, defaults: defaults)
         check("export: reset clears the bookmark", !TranscriptExportLocation.isCustom(defaults: defaults))
+    }
+
+    // Splitting one recording into two meetings: the data half.
+    @MainActor
+    static func testMeetingSplit() {
+        let schema = Schema([Meeting.self, TranscriptSegment.self, CallInsight.self, CallProfile.self, SpeakerProfile.self])
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        guard let container = try? ModelContainer(for: schema, configurations: [config]) else {
+            check("split container builds", false); return
+        }
+        let ctx = ModelContext(container)
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let m = Meeting(title: "Standup", date: start)
+        ctx.insert(m)
+        m.duration = 100
+        m.summary = "whole-call summary"
+        m.notes = "typed during the call"
+        m.speakerNames = ["Speaker 1": "Ada"]
+        for (s, e, label, text) in [(0.0, 5.0, "Me", "first"), (38.0, 42.0, "Speaker 1", "straddles"),
+                                     (40.0, 45.0, "Me", "second call opens"), (90.0, 95.0, "Speaker 1", "last")] {
+            let seg = TranscriptSegment(startTime: s, endTime: e, text: text, speakerLabel: label)
+            ctx.insert(seg); seg.meeting = m
+        }
+        for (t, title) in [(10.0, "early"), (40.0, "on the cut"), (70.0, "late")] {
+            let i = CallInsight(from: Insight(kindKey: "blocker", title: title, detail: "d", callTime: t, source: nil))
+            ctx.insert(i); i.meeting = m
+        }
+
+        // Guards live in the model so no caller can get them wrong.
+        check("split refuses an unfinished meeting", m.split(at: 40, in: ctx) == nil)
+        m.status = .done
+        check("split refuses a cut at the very start", !m.canSplit(at: 0.5))
+        check("split refuses a cut at the very end", !m.canSplit(at: 99.5))
+        check("split refuses past the end", m.split(at: 120, in: ctx) == nil)
+        check("refused split changes nothing", m.segments.count == 4 && m.duration == 100 && m.summary != nil)
+
+        guard let second = m.split(at: 40, in: ctx) else { check("split returns the second meeting", false); return }
+        check("first half keeps the lines before the cut",
+              Set(m.sortedSegments.map(\.text)) == ["first", "straddles"])
+        check("second half gets the lines from the cut on",
+              second.sortedSegments.map(\.text) == ["second call opens", "last"])
+        check("moved lines are re-based to 00:00",
+              second.sortedSegments.first?.startTime == 0 && second.sortedSegments.last?.startTime == 50)
+        check("a straddling line is clamped to the cut",
+              m.sortedSegments.last?.endTime == 40)
+        check("insights partition by call time, the cut itself moving",
+              m.insights.map(\.title) == ["early"] && Set(second.insights.map(\.title)) == ["on the cut", "late"])
+        check("moved insights are re-based", second.sortedInsights.map(\.callTime) == [0, 30])
+        check("durations add up", m.duration == 40 && second.duration == 60)
+        check("second half starts when the first ends",
+              second.date == start.addingTimeInterval(40))
+        check("second half is named after the first", second.title == "Standup (part 2)")
+        check("second half awaits processing", second.status == .processing)
+        check("both reports are cleared", m.summary == nil && second.summary == nil)
+        check("notes stay with the first half", m.notes == "typed during the call" && second.notes.isEmpty)
+        check("speaker names carry over", second.speakerNames["Speaker 1"] == "Ada")
+        check("both meetings are in the store",
+              ((try? ctx.fetch(FetchDescriptor<Meeting>()))?.count ?? -1) == 2)
+        check("no line was lost or duplicated",
+              ((try? ctx.fetch(FetchDescriptor<TranscriptSegment>()))?.count ?? -1) == 4)
+
+        // Clock parsing for the typed-timestamp path.
+        check("clock parses mm:ss", Meeting.parseClock("12:34") == 754)
+        check("clock parses h:mm:ss", Meeting.parseClock("1:02:03") == 3723)
+        check("clock parses bare seconds", Meeting.parseClock("90") == 90)
+        check("clock parses fractional seconds", Meeting.parseClock("0:01.5") == 1.5)
+        check("clock rejects 60 in a seconds field", Meeting.parseClock("1:60") == nil)
+        check("clock rejects garbage", Meeting.parseClock("ten") == nil && Meeting.parseClock("1::2") == nil
+              && Meeting.parseClock("-5") == nil)
+        check("clock string round-trips", Meeting.parseClock(Meeting.clockString(3723)) == 3723
+              && Meeting.clockString(754) == "12:34")
+    }
+
+    // Splitting one recording into two meetings: the audio half.
+    static func testAudioSplitter() {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("parrot-split-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Three seconds of mono float32 at 16 kHz, the shape AudioCaptureManager writes.
+        let rate = 16_000.0
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)!
+        let source = dir.appendingPathComponent("system_1.caf")
+        let frames = AVAudioFrameCount(3 * rate)
+        guard let out = try? AVAudioFile(forWriting: source, settings: format.settings),
+              let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
+            check("split fixture writes", false); return
+        }
+        buf.frameLength = frames
+        for i in 0..<Int(frames) { buf.floatChannelData![0][i] = Float(i) / Float(frames) }
+        do { try out.write(from: buf) } catch { check("split fixture writes", false); return }
+
+        let parts = AudioSplitter.partURLs(for: source)
+        check("part names sit beside the source",
+              parts.head.lastPathComponent == "system_1_part1.caf" && parts.tail.lastPathComponent == "system_1_part2.caf")
+        let ok = (try? AudioSplitter.split(fileAt: source, at: 1, head: parts.head, tail: parts.tail)) != nil
+        let head = try? AVAudioFile(forReading: parts.head)
+        let tail = try? AVAudioFile(forReading: parts.tail)
+        check("split writes both halves", ok && head != nil && tail != nil)
+        check("head holds exactly the first second", head?.length == AVAudioFramePosition(rate))
+        check("tail holds the rest", tail?.length == AVAudioFramePosition(2 * rate))
+        check("halves keep the source format",
+              head?.processingFormat.sampleRate == rate && head?.processingFormat.channelCount == 1)
+        // The first sample of the tail is the sample at the cut, not a repeat or a gap.
+        if let tail, let probe = AVAudioPCMBuffer(pcmFormat: tail.processingFormat, frameCapacity: 1) {
+            try? tail.read(into: probe, frameCount: 1)
+            check("tail starts at the cut sample",
+                  probe.frameLength == 1 && abs(probe.floatChannelData![0][0] - Float(rate) / Float(frames)) < 1e-6)
+        } else {
+            check("tail starts at the cut sample", false)
+        }
+        check("source is left untouched",
+              (try? AVAudioFile(forReading: source))?.length == AVAudioFramePosition(frames))
+        check("a second split will not overwrite the first",
+              AudioSplitter.partURLs(for: source).head.lastPathComponent == "system_1_part1-2.caf")
+        check("cut outside the file is refused",
+              (try? AudioSplitter.split(fileAt: source, at: 5, head: dir.appendingPathComponent("x.caf"),
+                                        tail: dir.appendingPathComponent("y.caf"))) == nil
+                && !FileManager.default.fileExists(atPath: dir.appendingPathComponent("x.caf").path))
     }
 
     static func testDiarizedLabel() {

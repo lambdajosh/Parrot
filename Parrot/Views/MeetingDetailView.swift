@@ -44,6 +44,11 @@ struct MeetingDetailView: View {
     @State private var clipStopTask: Task<Void, Never>?
     /// The line a pending "delete everything after this" is anchored to.
     @State private var truncateAnchor: TranscriptSegment?
+    /// The split prompt: a clock string the user can edit, prefilled with the
+    /// paused playback position or whatever was right-clicked.
+    @State private var showSplitPrompt = false
+    @State private var splitClockText = ""
+    @State private var splitErrorText: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -114,12 +119,35 @@ struct MeetingDetailView: View {
                     Label("Export", systemImage: "square.and.arrow.up")
                 }
 
+                Button {
+                    askToSplit(at: playbackTime)
+                } label: {
+                    Label("Split Meeting", systemImage: "scissors")
+                }
+                .disabled(meeting.status != .done || meeting.duration < 2 * Meeting.minimumSplitPart)
+                .help("Cut this recording in two at a time you choose. Each half becomes its own meeting.")
+
                 Button(role: .destructive) {
                     confirmingDelete = true
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
             }
+        }
+        .alert("Split Meeting", isPresented: $showSplitPrompt) {
+            TextField("mm:ss", text: $splitClockText)
+            Button("Split", role: .destructive) { performSplit() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Everything from this time on becomes a new meeting with its own transcript, speaker detection, and report. The recording is cut in two and the reports are rewritten for each half. This can't be undone.")
+        }
+        .alert("Couldn't Split", isPresented: Binding(
+            get: { splitErrorText != nil },
+            set: { if !$0 { splitErrorText = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(splitErrorText ?? "")
         }
         .confirmationDialog("Delete this meeting?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) { onDelete?() }
@@ -326,6 +354,46 @@ struct MeetingDetailView: View {
         .controlSize(.small)
         .padding(.horizontal, Theme.Metrics.pad)
         .padding(.vertical, 8)
+        // Pause, scrub to the moment the next call began, right-click: the
+        // paused position is the cut point. Greyed while playing so the time
+        // in the menu title is the one that gets used.
+        .contextMenu {
+            Button("Split Meeting at \(formatTime(playbackTime))…") {
+                askToSplit(at: playbackTime)
+            }
+            .disabled(isPlaying || !meeting.canSplit(at: playbackTime))
+        }
+    }
+
+    /// Opens the split prompt prefilled with `time`; the user can retype it.
+    private func askToSplit(at time: TimeInterval) {
+        splitClockText = Meeting.clockString(time)
+        showSplitPrompt = true
+    }
+
+    private func performSplit() {
+        guard let time = Meeting.parseClock(splitClockText) else {
+            splitErrorText = "Enter a time like 12:34 or 1:02:03."
+            return
+        }
+        guard meeting.canSplit(at: time) else {
+            splitErrorText = "Pick a time between \(Meeting.clockString(Meeting.minimumSplitPart)) and \(Meeting.clockString(meeting.duration - Meeting.minimumSplitPart))."
+            return
+        }
+        // Release the files before they are cut and removed underneath the players.
+        stopPlayback()
+        audioPlayer = nil
+        micPlayer = nil
+        Task {
+            let second = await recordingManager.split(meeting: meeting, at: time)
+            if second == nil {
+                splitErrorText = recordingManager.splitError ?? "The meeting was left as it was."
+            }
+            // The first half now has a shorter file at a new path.
+            playbackTime = 0
+            prepareAudioPlayer()
+            updateActiveSegment()
+        }
     }
 
     // MARK: - Report tab (Summary + Coaching)

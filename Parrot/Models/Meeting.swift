@@ -135,6 +135,114 @@ final class Meeting {
         return tail.count
     }
 
+    // MARK: - Split
+
+    /// Shortest piece a split may leave on either side, in seconds. Below this
+    /// a part has no audio worth diarizing and the cut is almost certainly a
+    /// mis-click at the very start or end of the scrubber. Chosen as a UX
+    /// guard, not measured.
+    static let minimumSplitPart: TimeInterval = 1
+
+    /// True when `time` is a legal cut point for this meeting: finished, and
+    /// leaving at least `minimumSplitPart` of audio on both sides.
+    func canSplit(at time: TimeInterval) -> Bool {
+        status == .done
+            && time >= Self.minimumSplitPart
+            && duration - time >= Self.minimumSplitPart
+    }
+
+    /// Moves everything from `time` onward into a new meeting and returns it,
+    /// or nil when the cut is not allowed (see `canSplit`). This is the data
+    /// half of a split; the caller cuts the audio files and runs diarization.
+    ///
+    /// Lines and insights are partitioned by their start time, and the moved
+    /// ones are re-based so the second meeting starts at 00:00. A line that
+    /// straddles the cut stays in the first part with its end clamped, since
+    /// the words before the cut are what the first meeting's audio holds. Both
+    /// reports are cleared: a summary of the whole recording describes neither
+    /// half. Notes stay with the first part, since they were typed during it
+    /// and there is no timestamp to divide them by.
+    @discardableResult
+    func split(at time: TimeInterval, in context: ModelContext) -> Meeting? {
+        guard canSplit(at: time) else { return nil }
+
+        let second = Meeting(title: "\(title) (part 2)", date: date.addingTimeInterval(time))
+        // Insert before touching any relationship, the same SwiftData rule
+        // addSegment follows.
+        context.insert(second)
+        second.duration = duration - time
+        second.status = .processing
+        second.profile = profile
+        second.brief = brief
+        second.profileSnapshotData = profileSnapshotData
+        second.themName = themName
+        second.speakerNamesData = speakerNamesData
+        second.speakerPromptDismissed = speakerPromptDismissed
+        second.wasRecovered = wasRecovered
+
+        // Snapshot first: reassigning a segment's meeting mutates the array
+        // being iterated.
+        for segment in Array(segments) {
+            if segment.startTime >= time {
+                segment.startTime -= time
+                segment.endTime = max(segment.endTime - time, segment.startTime)
+                segment.meeting = second
+            } else if segment.endTime > time {
+                segment.endTime = time
+            }
+        }
+        for insight in Array(insights) where insight.callTime >= time {
+            insight.callTime -= time
+            insight.meeting = second
+        }
+
+        // A tail-trim receipt names a call time; it follows the half that
+        // still contains that point.
+        if truncatedAt != nil, truncatedAfterTime >= time {
+            second.truncatedAt = truncatedAt
+            second.truncatedAfterTime = truncatedAfterTime - time
+            second.truncatedLineCount = truncatedLineCount
+            truncatedAt = nil
+            truncatedAfterTime = 0
+            truncatedLineCount = 0
+        }
+
+        duration = time
+        summary = nil
+        coaching = nil
+        // Diarization re-labels each half on its own audio; stale means are
+        // worse than none until it runs.
+        speakerEmbeddingsData = nil
+        try? context.save()
+        return second
+    }
+
+    /// Parses a clock string the way the transcript shows times: "ss",
+    /// "mm:ss", or "h:mm:ss", with optional fractional seconds. Nil for
+    /// anything else, including negative or out-of-range fields.
+    static func parseClock(_ text: String) -> TimeInterval? {
+        let parts = text.trimmingCharacters(in: .whitespaces).split(separator: ":", omittingEmptySubsequences: false)
+        guard (1...3).contains(parts.count) else { return nil }
+        var total: TimeInterval = 0
+        for (index, part) in parts.enumerated() {
+            let isLast = index == parts.count - 1
+            guard !part.isEmpty, let value = Double(part), value >= 0 else { return nil }
+            // Minutes and seconds after a colon must be a full 0-59 field.
+            if index > 0, value >= 60 { return nil }
+            if !isLast, value != value.rounded() { return nil }
+            total = total * 60 + value
+        }
+        return total
+    }
+
+    /// The inverse of `parseClock` for prefilled fields: mm:ss, or h:mm:ss
+    /// past an hour, whole seconds.
+    static func clockString(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded(.down))
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
+    }
+
     static func noteLines(_ count: Int) -> String {
         count == 1 ? "1 line" : "\(count) lines"
     }

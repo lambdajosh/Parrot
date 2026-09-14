@@ -422,6 +422,92 @@ final class RecordingManager {
         markDone(meeting)
     }
 
+    // MARK: - Split
+
+    /// Set when the last split failed; the detail view shows it and clears it.
+    var splitError: String?
+
+    /// Cuts a finished meeting in two at `time`: the audio files are split on
+    /// disk, the transcript and insights are partitioned (see `Meeting.split`),
+    /// and both halves get their own diarization pass and, when the copilot is
+    /// configured, their own report. Returns the new second meeting, or nil
+    /// when nothing changed. For the recording that ran straight from one call
+    /// into the next without a stop.
+    ///
+    /// Order matters: the files are cut before any row changes, so a failed
+    /// cut leaves the meeting exactly as it was. The originals are removed only
+    /// once both halves exist.
+    @discardableResult
+    func split(meeting: Meeting, at time: TimeInterval) async -> Meeting? {
+        guard let modelContext, meeting.canSplit(at: time),
+              !(isRecording && meeting.id == currentMeeting?.id),
+              !diarizationEngine.isProcessing else { return nil }
+        splitError = nil
+
+        // 1. Audio, off the main actor. Both tracks share the recording clock,
+        //    so one cut point serves both.
+        let systemPath = meeting.systemAudioPath.nilIfEmpty
+        let micPath = meeting.micAudioPath?.nilIfEmpty
+        var systemParts: (head: URL, tail: URL)?
+        var micParts: (head: URL, tail: URL)?
+        do {
+            systemParts = try await Self.cut(path: systemPath, at: time)
+            micParts = try await Self.cut(path: micPath, at: time)
+        } catch {
+            for part in [systemParts, micParts].compactMap({ $0 }) {
+                try? FileManager.default.removeItem(at: part.head)
+                try? FileManager.default.removeItem(at: part.tail)
+            }
+            splitError = error.localizedDescription
+            NSLog("Parrot: split failed, meeting left whole: \(error.localizedDescription)")
+            return nil
+        }
+
+        // 2. Rows.
+        guard let second = meeting.split(at: time, in: modelContext) else {
+            for part in [systemParts, micParts].compactMap({ $0 }) {
+                try? FileManager.default.removeItem(at: part.head)
+                try? FileManager.default.removeItem(at: part.tail)
+            }
+            return nil
+        }
+        meeting.status = .processing
+        if let systemParts {
+            meeting.systemAudioPath = systemParts.head.path
+            second.systemAudioPath = systemParts.tail.path
+        }
+        if let micParts {
+            meeting.micAudioPath = micParts.head.path
+            second.micAudioPath = micParts.tail.path
+        }
+        for path in [systemPath, micPath].compactMap({ $0 }) {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        try? modelContext.save()
+
+        // 3. Same post-call chain each half would have had on its own.
+        for half in [meeting, second] {
+            await postProcess(meeting: half)
+            if callAnalysisEngine.isEnabled, callAnalysisEngine.provider.isConfigured {
+                await generateSummary(meeting: half, includeCoaching: half.micAudioPath != nil)
+            }
+            markDone(half)
+        }
+        return second
+    }
+
+    /// Splits one track, or returns nil when the meeting has no such track
+    /// (imports have no mic file; a recovered call may have lost its audio).
+    private nonisolated static func cut(path: String?, at time: TimeInterval) async throws -> (head: URL, tail: URL)? {
+        guard let path, FileManager.default.fileExists(atPath: path) else { return nil }
+        let source = URL(fileURLWithPath: path)
+        let parts = AudioSplitter.partURLs(for: source)
+        try await Task.detached(priority: .userInitiated) {
+            try AudioSplitter.split(fileAt: source, at: time, head: parts.head, tail: parts.tail)
+        }.value
+        return parts
+    }
+
     // MARK: - Deletion
 
     /// Deletes a meeting and its audio files. The only removal path in the app —
