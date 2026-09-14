@@ -127,6 +127,14 @@ bundle: build
 	@plutil -replace CFBundleShortVersionString -string "$(VERSION)"     $(PLIST)
 	@plutil -replace CFBundleVersion            -string "$(BUILD_NUM)"   $(PLIST)
 	@plutil -replace LSMinimumSystemVersion     -string "14.0"           $(PLIST)
+	@# A dev bundle must never update itself into the published release:
+	@# 0.0.0-dev sorts below every real version, so Sparkle would offer (or,
+	@# with "Keep Parrot up to date" on, silently install) the upstream build
+	@# over a local one. No feed URL makes AppUpdater a no-op and hides the
+	@# update controls. release.sh sets a real VERSION and keeps the feed.
+ifeq ($(VERSION),0.0.0-dev)
+	@plutil -remove SUFeedURL $(PLIST)
+endif
 	@# SwiftPM resource bundles + the UI fonts (Info.plist sets ATSApplicationFontsPath ".")
 	cp -R $(BINDIR)/*.bundle $(APP)/Contents/Resources/
 	cp Parrot/Fonts/*.otf $(APP)/Contents/Resources/
