@@ -166,7 +166,7 @@ In **Settings → Knowledge** you can brief the copilot like you'd brief a new t
 - **Drop in documents** — pricing sheets, FAQs, playbooks (PDF/text/markdown). They're chunked and embedded **on this Mac** (Apple's NaturalLanguage framework — documents are never uploaded). When a question comes up on a call, the copilot grounds its suggested answer in the best-matching passages and cites the source on the card. Each document takes an optional note like *"use for pricing questions"*.
 - **Coaching instructions** — standing guidance for every call: tone, style, behavior ("keep answers short and casual, always offer Good/Better/Best on price").
 - **General-knowledge fallback** — choose whether the copilot may answer beyond your documents. Cards always show where an answer came from: your document's name or *"general knowledge"*.
-- **Pre-call brief** — an optional one-liner on the dashboard before you hit record ("Call with Westfield PM about AC replacement") so the copilot has context from second one.
+- **Pre-call brief** — an optional one-liner on the Today pane before you hit record ("Call with Westfield PM about AC replacement") so the copilot has context from second one.
 
 ## Project Structure
 
@@ -192,7 +192,7 @@ Parrot/
     ExportService.swift        # TXT/SRT export
   Views/
     ContentView.swift          # Main navigation
-    DashboardView.swift        # Landing page with record button
+    DashboardView.swift        # Today pane: now/next call, record, today's recordings
     LiveRecordingView.swift    # Copilot center stage + chat-bubble transcript + notes
     CopilotPanelView.swift     # Coach card, pinned cards, insight feed
     MeetingDetailView.swift    # Report/transcript/insights/notes tabs + cost row

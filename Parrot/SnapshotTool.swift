@@ -745,8 +745,8 @@ enum AnalyzeTest {
 /// Offscreen renderer for the sidebar's waveform meeting rows. Run with:
 ///   Parrot --sidebar-snapshot /tmp/sidebar.png
 /// Seeds an in-memory store with meetings whose transcripts have distinct talk
-/// balances (even, me-heavy, live-recording, empty) so the dual-lane strips can
-/// be eyeballed in light AND dark ("-dark" suffix). Dev-only.
+/// states (live-recording, finished, empty) so the two-line rows can be
+/// eyeballed in light AND dark ("-dark" suffix). Dev-only.
 @MainActor
 enum SidebarSnapshot {
     static func write(to path: String) {
@@ -774,10 +774,10 @@ enum SidebarSnapshot {
         let empty = seed(context, "Imported audio", minutes: 0, pattern: [])
 
         let rows = VStack(spacing: 1) {
-            MeetingRow(meeting: live, selected: false)
-            MeetingRow(meeting: balanced, selected: true)
-            MeetingRow(meeting: meHeavy, selected: false)
-            MeetingRow(meeting: empty, selected: false)
+            MeetingRow(meeting: live)
+            MeetingRow(meeting: balanced)
+            MeetingRow(meeting: meHeavy)
+            MeetingRow(meeting: empty)
         }
         .padding(8)
         .frame(width: 240)

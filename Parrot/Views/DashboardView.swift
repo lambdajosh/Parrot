@@ -1,8 +1,9 @@
 import SwiftUI
 import SwiftData
-import CoreGraphics
-import AVFoundation
 
+/// The Today pane: what is happening or coming up according to the calendar,
+/// the one action that matters (record), and what was captured today. It
+/// answers "what should I do right now?" rather than showing lifetime totals.
 struct DashboardView: View {
     @Binding var selectedMeeting: Meeting?
     @Binding var showDashboard: Bool
@@ -17,29 +18,29 @@ struct DashboardView: View {
     @State private var errorMessage: String?
     @State private var showImporter = false
     @AppStorage("copilotEnabled") private var copilotEnabled = false
+    @AppStorage(MeetingScheduler.autoRecordKey) private var autoRecord = false
 
     var body: some View {
         ScrollView {
-            VStack(spacing: Theme.Metrics.sectionGap) {
-                recordButton
-                    .padding(.top, 44)
-
-                modelStatus
-
-                statsRow
-
-                if !recentMeetings.isEmpty {
-                    recentMeetingsSection
-                }
-
-                Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: Theme.Metrics.sectionGap) {
+                header
+                heroCard
+                if copilotEnabled { copilotSetup }
+                meetingsSection
+                footer
             }
-            .frame(maxWidth: 600)
+            .frame(maxWidth: Theme.Metrics.readingWidth, alignment: .leading)
             .frame(maxWidth: .infinity)
             .padding(.horizontal, Theme.Metrics.pad)
+            .padding(.vertical, Theme.Metrics.pad)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.Colors.canvas)
+        .navigationTitle("Today")
+        .fileImporter(isPresented: $showImporter,
+                      allowedContentTypes: AudioImport.contentTypes) { result in
+            if case .success(let url) = result { startImport(url) }
+        }
         // A real binding, not .constant: SwiftUI writes false into it on any
         // system-initiated dismissal, which a constant silently drops.
         .alert("Recording Error", isPresented: Binding(
@@ -54,78 +55,175 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: - Record Button
+    // MARK: - Header
 
-    private var recordButton: some View {
-        VStack(spacing: 12) {
-            Button {
-                Task {
-                    do {
-                        // Shared permission preflight + start (also used by the
-                        // menu bar) — see RecordingManager for the rationale.
-                        try await recordingManager.preflightPermissionsAndStart(modelContext: modelContext)
-                    } catch {
-                        errorMessage = error.localizedDescription
-                    }
+    /// The date, large: the navigation title already says "Today".
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(Date.now.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                .font(Theme.Typography.title(26))
+                .foregroundStyle(Theme.Colors.ink)
+            modelStatus
+        }
+    }
+
+    // MARK: - Hero
+
+    private var current: ScheduledMeeting? {
+        calendar.currentMeeting(at: .now, leadIn: MeetingScheduler.startLead)
+    }
+
+    private var next: ScheduledMeeting? { calendar.nextMeeting() }
+
+    /// One card, three states: a call is on now, one is coming up, or the day
+    /// is clear. The record action lives here in every state.
+    private var heroCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let current {
+                eyebrow("Now")
+                eventSummary(current, timeText: timeRange(current))
+                if autoRecord {
+                    Label("Parrot records this call automatically.", systemImage: "checkmark.circle")
+                        .font(Theme.Typography.secondary)
+                        .foregroundStyle(Theme.Colors.good)
                 }
-            } label: {
-                Image(systemName: "record.circle")
-                    .font(.system(size: 64))
-                    .foregroundStyle(Theme.Colors.stop)
-                    .symbolEffect(.pulse, options: .repeating, isActive: recordingManager.isRecording)
+            } else if let next {
+                eyebrow("Up next")
+                eventSummary(next, timeText: "\(next.start.formatted(date: .omitted, time: .shortened)) · \(relative(next.start))")
+                if autoRecord {
+                    Label("Recording starts on its own a minute before.", systemImage: "checkmark.circle")
+                        .font(Theme.Typography.secondary)
+                        .foregroundStyle(Theme.Colors.good)
+                }
+            } else {
+                eyebrow(calendar.isActive ? "Clear" : "Ready")
+                Text(calendar.isActive ? "No more video calls today" : "Ready to record")
+                    .font(Theme.Typography.title())
+                    .foregroundStyle(Theme.Colors.ink)
+                Text("Recording captures the other side of the call and your mic, transcribed on this Mac.")
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Theme.Colors.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .buttonStyle(.plain)
-            .disabled(!recordingManager.transcriptionEngine.isReady)
 
-            Text("Start recording")
-                .font(Theme.Typography.cardTitle)
+            HStack(spacing: 12) {
+                recordButton
+                Button("Import a recording…") { showImporter = true }
+                    .disabled(recordingManager.importProgress != nil || !recordingManager.transcriptionEngine.isReady)
+                if !calendar.isActive {
+                    SettingsLink {
+                        Text("Connect your calendar…")
+                    }
+                    .help("Name recordings after the meeting, know who was invited, and let Parrot record on schedule. Settings → Meetings.")
+                }
+            }
+            .controlSize(.large)
+            .padding(.top, 4)
+        }
+        .padding(Theme.Metrics.pad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.Colors.panel, in: RoundedRectangle(cornerRadius: Theme.Metrics.cardRadius))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Metrics.cardRadius).strokeBorder(Theme.Colors.line))
+    }
+
+    private func eyebrow(_ text: String) -> some View {
+        Text(text)
+            .textCase(.uppercase)
+            .font(Theme.Typography.cap)
+            .foregroundStyle(Theme.Colors.ink3)
+    }
+
+    private func eventSummary(_ event: ScheduledMeeting, timeText: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(event.title)
+                .font(Theme.Typography.title())
                 .foregroundStyle(Theme.Colors.ink)
-
-            Text("Captures system audio + your mic, transcribed on-device.")
-                .font(Theme.Typography.secondary)
+                .lineLimit(2)
+            Text(timeText)
+                .font(Theme.Typography.body)
                 .foregroundStyle(Theme.Colors.ink2)
-
-            importButton
-                .padding(.top, 4)
-
-            calendarLine
-
-            if copilotEnabled {
-                profilePicker
-                callBriefField
+                .monospacedDigit()
+            if !event.otherNames.isEmpty {
+                Label(event.otherNames.joined(separator: ", "), systemImage: "person.2")
+                    .font(Theme.Typography.secondary)
+                    .foregroundStyle(Theme.Colors.ink2)
+                    .lineLimit(1)
+            }
+            if let agenda = event.agenda {
+                Text(agenda)
+                    .font(Theme.Typography.secondary)
+                    .foregroundStyle(Theme.Colors.ink2)
+                    .lineLimit(2)
+                    .padding(.top, 2)
             }
         }
     }
 
-    /// Bring an existing recording in and transcribe it — the alternative to
-    /// capturing live. Disabled while recording (shared WhisperKit).
-    private var importButton: some View {
+    /// ⌘R belongs to the Recording menu; this button is the visible twin.
+    private var recordButton: some View {
         Button {
-            showImporter = true
+            Task {
+                do {
+                    try await recordingManager.preflightPermissionsAndStart(modelContext: modelContext)
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            }
         } label: {
-            Label("Import a recording", systemImage: "square.and.arrow.down")
-                .font(Theme.Typography.sans(13, .medium))
-                .foregroundStyle(Theme.Colors.ink)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Theme.Colors.chip, in: Capsule())
+            Label("Record", systemImage: "record.circle")
         }
-        .buttonStyle(.plain)
-        .disabled(recordingManager.isRecording || recordingManager.importProgress != nil
-                  || !recordingManager.transcriptionEngine.isReady)
-        .fileImporter(isPresented: $showImporter,
-                      allowedContentTypes: AudioImport.contentTypes) { result in
-            if case .success(let url) = result { startImport(url) }
+        .buttonStyle(.borderedProminent)
+        .tint(Theme.Colors.stop)
+        .disabled(!recordingManager.transcriptionEngine.isReady || recordingManager.importProgress != nil)
+    }
+
+    private func timeRange(_ event: ScheduledMeeting) -> String {
+        "\(event.start.formatted(date: .omitted, time: .shortened)) – \(event.end.formatted(date: .omitted, time: .shortened))"
+    }
+
+    private func relative(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: .now)
+    }
+
+    // MARK: - Model status
+
+    /// Only speaks up while something is in the way of recording.
+    @ViewBuilder
+    private var modelStatus: some View {
+        switch recordingManager.transcriptionEngine.modelState {
+        case .ready:
+            EmptyView()
+        case .notLoaded:
+            Label("Model not loaded", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(Theme.Colors.warn)
+                .font(Theme.Typography.secondary)
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Preparing \(recordingManager.transcriptionEngine.loadingModelName ?? "the transcription model")… The first load can take a few minutes.")
+                    .font(Theme.Typography.secondary)
+                    .foregroundStyle(Theme.Colors.ink2)
+            }
+        case .downloading(let progress):
+            ModelDownloadProgressView(progress: progress,
+                                      modelName: recordingManager.transcriptionEngine.loadingModelName)
+        case .error(let message):
+            Label(message, systemImage: "xmark.circle")
+                .foregroundStyle(Theme.Colors.stop)
+                .font(Theme.Typography.secondary)
         }
     }
 
-    private func startImport(_ url: URL) {
-        guard let meeting = recordingManager.importAudioFile(from: url, modelContext: modelContext) else {
-            errorMessage = "Couldn't import that file. Make sure it's an audio file and nothing else is recording."
-            return
+    // MARK: - Copilot setup
+
+    private var copilotSetup: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            eyebrow("Copilot")
+            profilePicker
+            callBriefField
         }
-        selectedMeeting = meeting
-        showDashboard = false
     }
 
     private var profilePicker: some View {
@@ -148,203 +246,84 @@ struct DashboardView: View {
             }
             .padding(.horizontal, 2)
         }
-        .frame(maxWidth: 460)
-    }
-
-    /// What the calendar says is happening now or next, so the user can see
-    /// what a recording started this minute would be named after.
-    @ViewBuilder
-    private var calendarLine: some View {
-        if calendar.isActive {
-            if let now = calendar.currentMeeting(at: .now, leadIn: MeetingScheduler.startLead) {
-                Label("Now: \(now.title)", systemImage: "calendar.badge.clock")
-                    .font(.appCaption)
-                    .foregroundStyle(Theme.Colors.accent)
-                    .padding(.top, 4)
-            } else if let next = calendar.nextMeeting() {
-                Label("Next: \(next.title) at \(next.start.formatted(date: .omitted, time: .shortened))", systemImage: "calendar")
-                    .font(.appCaption)
-                    .foregroundStyle(Theme.Colors.ink2)
-                    .padding(.top, 4)
-            }
-        }
     }
 
     /// Optional one-line context the copilot gets from second one of the call.
+    /// The calendar fills this in when it is left empty.
     private var callBriefField: some View {
         @Bindable var recordingManager = recordingManager
-        return HStack(spacing: 6) {
-            Image(systemName: "sparkles")
-                .font(.appCaption)
-                .foregroundStyle(Theme.Colors.accent)
-
-            TextField(
-                "Brief the copilot (optional) — e.g. \"Call with Westfield PM about AC replacement\"",
-                text: $recordingManager.nextCallBrief
-            )
-            .textFieldStyle(.roundedBorder)
-            .font(.appCaption)
-        }
-        .frame(maxWidth: 420)
-        .padding(.top, 4)
+        return TextField(
+            calendar.isActive ? "Brief the copilot (the calendar agenda is used when this is empty)"
+                              : "Brief the copilot (optional), e.g. \"Call with Westfield PM about AC replacement\"",
+            text: $recordingManager.nextCallBrief
+        )
+        .textFieldStyle(.roundedBorder)
+        .font(Theme.Typography.secondary)
+        .frame(maxWidth: 520)
     }
 
-    // MARK: - Model Status
+    // MARK: - Meetings
 
-    @ViewBuilder
-    private var modelStatus: some View {
-        switch recordingManager.transcriptionEngine.modelState {
-        case .notLoaded:
-            Label("Model not loaded", systemImage: "exclamationmark.triangle")
-                .foregroundStyle(Theme.Colors.warn)
-                .font(.appCaption)
-        case .loading:
-            HStack(alignment: .top, spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Preparing \(recordingManager.transcriptionEngine.loadingModelName ?? "WhisperKit model")…")
-                    Text("The first load can take a few minutes.")
+    private var todaysMeetings: [Meeting] {
+        meetings.filter { Calendar.current.isDateInToday($0.date) }
+    }
+
+    /// Today's recordings when there are any, otherwise the last few, so the
+    /// pane is never empty on a quiet day.
+    private var meetingsSection: some View {
+        let today = todaysMeetings
+        let rows = today.isEmpty ? Array(meetings.prefix(5)) : today
+        return VStack(alignment: .leading, spacing: 8) {
+            if !rows.isEmpty {
+                eyebrow(today.isEmpty ? "Recent" : "Recorded today")
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, meeting in
+                        Button {
+                            selectedMeeting = meeting
+                            showDashboard = false
+                        } label: {
+                            HStack(spacing: 8) {
+                                MeetingRow(meeting: meeting)
+                                Image(systemName: "chevron.right")
+                                    .font(Theme.Typography.caption)
+                                    .foregroundStyle(Theme.Colors.ink3)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .meetingContextMenu(meeting, onDeleted: {
+                            if selectedMeeting?.id == meeting.id { selectedMeeting = nil }
+                        })
+                        if index < rows.count - 1 {
+                            Divider().padding(.leading, 12)
+                        }
+                    }
                 }
-                .font(.appCaption)
-                .foregroundStyle(Theme.Colors.ink2)
-            }
-        case .downloading(let progress):
-            ModelDownloadProgressView(progress: progress,
-                                      modelName: recordingManager.transcriptionEngine.loadingModelName)
-        case .ready:
-            Label("Ready to record", systemImage: "checkmark.circle")
-                .foregroundStyle(Theme.Colors.good)
-                .font(.appCaption)
-        case .error(let message):
-            Label(message, systemImage: "xmark.circle")
-                .foregroundStyle(Theme.Colors.stop)
-                .font(.appCaption)
-        }
-    }
-
-    // MARK: - Stats Row
-
-    private var statsRow: some View {
-        HStack(spacing: 12) {
-            StatTile(value: "\(meetings.count)", label: "Meetings")
-            StatTile(value: String(format: "%.1f", totalHours), label: "Hours")
-            StatTile(value: formatNumber(totalWords), label: "Words")
-        }
-    }
-
-    private var totalHours: Double {
-        meetings.reduce(0) { $0 + $1.duration } / 3600
-    }
-
-    private var totalWords: Int {
-        meetings.reduce(0) { total, meeting in
-            total + meeting.segments.reduce(0) { $0 + $1.text.split(separator: " ").count }
-        }
-    }
-
-    private func formatNumber(_ n: Int) -> String {
-        if n >= 1000 {
-            return String(format: "%.1fK", Double(n) / 1000)
-        }
-        return "\(n)"
-    }
-
-    // MARK: - Recent Meetings
-
-    private var recentMeetings: [Meeting] {
-        Array(meetings.prefix(5))
-    }
-
-    private var recentMeetingsSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Recent meetings")
-                .font(Theme.Typography.cap)
-                .foregroundStyle(Theme.Colors.ink3)
-                .padding(.horizontal, 4)
-                .padding(.bottom, 2)
-
-            ForEach(recentMeetings) { meeting in
-                Button {
-                    selectedMeeting = meeting
-                    showDashboard = false
-                } label: {
-                    DashboardMeetingRow(meeting: meeting)
-                }
-                .buttonStyle(.plain)
-                .meetingContextMenu(meeting, onDeleted: {
-                    if selectedMeeting?.id == meeting.id { selectedMeeting = nil }
-                })
+                .background(Theme.Colors.panel, in: RoundedRectangle(cornerRadius: Theme.Metrics.cardRadius))
+                .overlay(RoundedRectangle(cornerRadius: Theme.Metrics.cardRadius).strokeBorder(Theme.Colors.line))
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
-}
 
-// MARK: - Stat Card
+    // MARK: - Footer
 
-struct StatTile: View {
-    let value: String
-    let label: String
+    private var footer: some View {
+        let hours = meetings.reduce(0) { $0 + $1.duration } / 3600
+        let count = meetings.count == 1 ? "1 meeting" : "\(meetings.count) meetings"
+        return Text("\(count) · \(hours.formatted(.number.precision(.fractionLength(1)))) hours · everything stays on this Mac")
+            .font(Theme.Typography.caption)
+            .foregroundStyle(Theme.Colors.ink3)
+            .monospacedDigit()
+    }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(value)
-                .font(Theme.Typography.title())
-                .foregroundStyle(Theme.Colors.ink)
-                .monospacedDigit()
-            Text(label)
-                .font(Theme.Typography.secondary)
-                .foregroundStyle(Theme.Colors.ink2)
+    private func startImport(_ url: URL) {
+        guard let meeting = recordingManager.importAudioFile(from: url, modelContext: modelContext) else {
+            errorMessage = "Couldn't import that file. Make sure it's an audio file and nothing else is recording."
+            return
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(Theme.Colors.panel, in: RoundedRectangle(cornerRadius: Theme.Metrics.radius))
-        .overlay(RoundedRectangle(cornerRadius: Theme.Metrics.radius).strokeBorder(Theme.Colors.line))
-    }
-}
-
-// MARK: - Recent Meeting Card
-
-struct DashboardMeetingRow: View {
-    let meeting: Meeting
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(Theme.Colors.accent.opacity(0.8))
-                .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(meeting.title)
-                    .font(Theme.Typography.sans(13, .medium))
-                    .foregroundStyle(Theme.Colors.ink)
-                    .lineLimit(1)
-                HStack(spacing: 4) {
-                    Text(meeting.date.formatted(date: .abbreviated, time: .shortened))
-                        .font(Theme.Typography.mono(11))
-                        .foregroundStyle(Theme.Colors.ink3)
-                    Text("· \(who) ·")
-                        .font(Theme.Typography.secondary)
-                        .foregroundStyle(Theme.Colors.ink2)
-                    Text(meeting.formattedDuration)
-                        .font(Theme.Typography.mono(11))
-                        .foregroundStyle(Theme.Colors.ink3)
-                }
-                .lineLimit(1)
-            }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.system(size: 11))
-                .foregroundStyle(Theme.Colors.ink3)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-    }
-
-    private var who: String {
-        meeting.participantsSummary
-            ?? meeting.themName?.nilIfEmpty
-            ?? (meeting.speakerCount > 1 ? "\(meeting.speakerCount) people" : "Them")
+        selectedMeeting = meeting
+        showDashboard = false
     }
 }

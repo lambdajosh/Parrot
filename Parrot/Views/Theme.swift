@@ -98,9 +98,14 @@ enum Theme {
     // MARK: - Metrics
 
     enum Metrics {
-        /// The one corner radius. Capsule is allowed only for true pills.
+        /// The one corner radius for controls and rows. Capsule is allowed only for true pills.
         static let radius: CGFloat = 6
         static let chipRadius: CGFloat = 6
+        /// Grouped content cards (the Today pane), matching System Settings' groups.
+        static let cardRadius: CGFloat = 10
+        /// Cap for a reading column of cards and rows, so the Today pane does
+        /// not stretch across a wide window.
+        static let readingWidth: CGFloat = 720
         /// Report/insights column cap — wide enough to use the screen while
         /// keeping prose lines readable.
         static let contentMaxWidth: CGFloat = 1100

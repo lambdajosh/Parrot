@@ -142,6 +142,23 @@ final class Meeting {
         return tail.count
     }
 
+    /// False while the title is still the generated "Meeting <date>": lists
+    /// then show a short label and let the section and time carry the date.
+    var hasCustomTitle: Bool { title != Self.defaultTitle(for: date) }
+
+    /// Who was on the call, for list rows: named speakers first, then the
+    /// legacy collective name, then the calendar invitees, then a head count.
+    var whoLine: String? {
+        if let named = participantsSummary { return named }
+        if let them = themName?.nilIfEmpty { return them }
+        let invited = attendeeNames
+        if !invited.isEmpty {
+            return invited.count <= 3 ? invited.joined(separator: ", ")
+                : "\(invited.prefix(2).joined(separator: ", ")) +\(invited.count - 2)"
+        }
+        return speakerCount > 1 ? "\(speakerCount) people" : nil
+    }
+
     // MARK: - Calendar context
 
     var attendees: [ScheduledMeeting.Attendee] {

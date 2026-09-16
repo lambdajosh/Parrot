@@ -15,7 +15,7 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 
 | File | L | Purpose |
 |---|---|---|
-| `Models/Meeting.swift` | 369 | `Meeting` record + `MeetingStatus` lifecycle + per-speaker names/embeddings + truncate/split |
+| `Models/Meeting.swift` | 386 | `Meeting` record + `MeetingStatus` lifecycle + per-speaker names/embeddings + truncate/split |
 | `Models/ScheduledMeeting.swift` | 125 | Calendar event value type: video-link detection, Meet boilerplate stripping, current/next matching, copilot brief |
 | `Models/TranscriptSegment.swift` | 34 | One diarized, timestamped utterance |
 | `Models/Insight.swift` | 60 | `CallInsight` (stored) and `Insight` (live value) |
@@ -56,9 +56,9 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 
 | File | L | Purpose |
 |---|---|---|
-| `Views/ContentView.swift` | 190 | Root split view + empty state + corner bug button |
-| `Views/SidebarView.swift` | 361 | Meeting list, rows, talk-ratio strip |
-| `Views/DashboardView.swift` | 350 | Landing stats + recent meetings |
+| `Views/ContentView.swift` | 193 | Root split view + empty state + corner bug button |
+| `Views/SidebarView.swift` | 199 | Source list: Today + meetings by day, two-line rows, sidebar search, pinned Settings |
+| `Views/DashboardView.swift` | 328 | Today pane: now/next calendar call + Record, copilot brief, today's recordings |
 | `Views/LiveRecordingView.swift` | 573 | In-call screen: chat bubbles, mic level, side tabs |
 | `Views/CopilotPanelView.swift` | 729 | Live insight cards, pinned blockers, suggested replies |
 | `Views/MeetingDetailView.swift` | 1161 | Post-call tabs: transcript, insights, report; speaker naming popover + confirm card |
@@ -72,7 +72,7 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 | `Views/AudioImport.swift` | 108 | Drag-drop / file import of existing audio |
 | `Views/AppCommands.swift` | 252 | `AppSession`, menu commands, context menus, notifications |
 | `Views/MenuBarView.swift` | 64 | Menu bar extra |
-| `Views/Theme.swift` | 151 | Single source of colors, fonts, metrics |
+| `Views/Theme.swift` | 156 | Single source of colors, fonts, metrics |
 
 ## Build & non-source
 

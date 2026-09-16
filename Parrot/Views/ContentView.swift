@@ -16,6 +16,7 @@ struct ContentView: View {
     /// Grabbed when the button is pressed, before the sheet covers the thing
     /// the user wants to show us.
     @State private var reportScreenshot: NSImage?
+    @State private var recordError: String?
 
     var body: some View {
         NavigationSplitView {
@@ -27,30 +28,82 @@ struct ContentView: View {
             )
             .navigationSplitViewColumnWidth(min: 215, ideal: 236, max: 320)
         } detail: {
-            if recordingManager.isRecording {
-                LiveRecordingView()
-            } else if showSettings {
-                settingsPane
-            } else if showDashboard {
-                DashboardView(
-                    selectedMeeting: $selectedMeeting,
-                    showDashboard: $showDashboard
-                )
-            } else if let meeting = selectedMeeting {
-                // .id forces a fresh view identity per meeting: @State (title/name
-                // drafts, audio players, tab) must not leak from one meeting to the
-                // next, and onAppear/onDisappear must re-fire to stop playback.
-                MeetingDetailView(meeting: meeting, onDelete: {
-                    // Clear the selection first so the detail view is gone
-                    // before its model object is deleted.
-                    selectedMeeting = nil
-                    showDashboard = true
-                    recordingManager.delete(meeting)
-                })
-                .id(meeting.id)
-            } else {
-                EmptyStateView()
+            Group {
+                if recordingManager.isRecording {
+                    LiveRecordingView()
+                        .navigationTitle("Recording")
+                } else if showSettings {
+                    settingsPane
+                        .navigationTitle("Settings")
+                } else if showDashboard {
+                    DashboardView(
+                        selectedMeeting: $selectedMeeting,
+                        showDashboard: $showDashboard
+                    )
+                } else if let meeting = selectedMeeting {
+                    // .id forces a fresh view identity per meeting: @State (title/name
+                    // drafts, audio players, tab) must not leak from one meeting to the
+                    // next, and onAppear/onDisappear must re-fire to stop playback.
+                    MeetingDetailView(meeting: meeting, onDelete: {
+                        // Clear the selection first so the detail view is gone
+                        // before its model object is deleted.
+                        selectedMeeting = nil
+                        showDashboard = true
+                        recordingManager.delete(meeting)
+                    })
+                    .id(meeting.id)
+                    .navigationTitle(meeting.hasCustomTitle ? meeting.title : "Meeting")
+                } else {
+                    EmptyStateView()
+                        .navigationTitle("Parrot")
+                }
             }
+            // The app's primary actions live in the toolbar, where a Mac user
+            // looks for them, and stay put whatever the pane shows.
+            .toolbar {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if recordingManager.isRecording {
+                        Button {
+                            Task { await recordingManager.stopRecording() }
+                        } label: {
+                            Label(recordingManager.isStopping ? "Finalizing…" : "Stop", systemImage: "stop.fill")
+                        }
+                        .disabled(recordingManager.isStopping)
+                        .help("Stop recording (⌘.)")
+                    } else {
+                        Button {
+                            showMenuImporter = true
+                        } label: {
+                            Label("Import", systemImage: "square.and.arrow.down")
+                        }
+                        .disabled(recordingManager.importProgress != nil || !recordingManager.transcriptionEngine.isReady)
+                        .help("Import an audio file as a meeting (⌘O)")
+
+                        Button {
+                            Task {
+                                do {
+                                    try await recordingManager.preflightPermissionsAndStart(modelContext: modelContext)
+                                } catch {
+                                    recordError = error.localizedDescription
+                                }
+                            }
+                        } label: {
+                            Label("Record", systemImage: "record.circle")
+                                .foregroundStyle(recordingManager.transcriptionEngine.isReady ? Theme.Colors.stop : Theme.Colors.ink3)
+                        }
+                        .disabled(!recordingManager.transcriptionEngine.isReady)
+                        .help("Start recording (⌘R)")
+                    }
+                }
+            }
+        }
+        .alert("Couldn't start recording", isPresented: Binding(
+            get: { recordError != nil },
+            set: { if !$0 { recordError = nil } }
+        )) {
+            Button("OK") { recordError = nil }
+        } message: {
+            Text(recordError ?? "")
         }
         // Drop an audio file anywhere in the window to import it — off while
         // recording, which owns the shared WhisperKit.
@@ -66,16 +119,9 @@ struct ContentView: View {
             }
             .padding(.top, 12)
         }
-        // Always reachable, except mid-call: a live recording is the one time
-        // the window is nobody else's business (and it keeps the button out of
-        // call screenshots).
-        .overlay(alignment: .bottomTrailing) {
-            if !recordingManager.isRecording {
-                BugReportButton { presentBugReport() }
-                    .padding(16)
-                    .transition(.opacity)
-            }
-        }
+        // Bug reports live in the Help menu (Help → Report a Bug…), where a
+        // Mac user expects them; a floating button over the content is not
+        // part of the platform's vocabulary.
         .sheet(isPresented: $showBugReport) {
             BugReportSheet(screenshot: reportScreenshot)
         }
@@ -116,22 +162,16 @@ struct ContentView: View {
     }
 
     /// Settings in the main pane — the old sheet was a cramped 520pt popup.
+    /// The title is the navigation title, so the pane starts with content.
     private var settingsPane: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Settings")
-                .font(Theme.Typography.title())
-                .foregroundStyle(Theme.Colors.ink)
-                .padding(.horizontal, Theme.Metrics.pad)
-                .padding(.top, Theme.Metrics.pad)
-                .padding(.bottom, 8)
-
             // Full bleed — no width cap, no centering. A wider window means a
             // wider editor, period. Base font is the body scale; controls
             // without an explicit font inherit it.
             SettingsView(isEmbedded: true)
                 .font(Theme.Typography.body)
                 .padding(.horizontal, Theme.Metrics.pad)
-                .padding(.bottom, Theme.Metrics.pad)
+                .padding(.vertical, Theme.Metrics.pad)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Theme.Colors.canvas)
