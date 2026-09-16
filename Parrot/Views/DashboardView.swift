@@ -8,6 +8,7 @@ struct DashboardView: View {
     @Binding var showDashboard: Bool
 
     @Environment(RecordingManager.self) private var recordingManager
+    @Environment(CalendarService.self) private var calendar
     @Environment(ProfileStore.self) private var profileStore
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Meeting.date, order: .reverse) private var meetings: [Meeting]
@@ -87,6 +88,8 @@ struct DashboardView: View {
             importButton
                 .padding(.top, 4)
 
+            calendarLine
+
             if copilotEnabled {
                 profilePicker
                 callBriefField
@@ -146,6 +149,25 @@ struct DashboardView: View {
             .padding(.horizontal, 2)
         }
         .frame(maxWidth: 460)
+    }
+
+    /// What the calendar says is happening now or next, so the user can see
+    /// what a recording started this minute would be named after.
+    @ViewBuilder
+    private var calendarLine: some View {
+        if calendar.isActive {
+            if let now = calendar.currentMeeting(at: .now, leadIn: MeetingScheduler.startLead) {
+                Label("Now: \(now.title)", systemImage: "calendar.badge.clock")
+                    .font(.appCaption)
+                    .foregroundStyle(Theme.Colors.accent)
+                    .padding(.top, 4)
+            } else if let next = calendar.nextMeeting() {
+                Label("Next: \(next.title) at \(next.start.formatted(date: .omitted, time: .shortened))", systemImage: "calendar")
+                    .font(.appCaption)
+                    .foregroundStyle(Theme.Colors.ink2)
+                    .padding(.top, 4)
+            }
+        }
     }
 
     /// Optional one-line context the copilot gets from second one of the call.

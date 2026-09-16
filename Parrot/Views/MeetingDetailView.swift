@@ -187,6 +187,25 @@ struct MeetingDetailView: View {
             .font(Theme.Typography.caption)
             .foregroundStyle(Theme.Colors.ink2)
 
+            // Who the calendar says was invited, and the call link.
+            if !meeting.attendeeNames.isEmpty || meeting.meetingLink != nil {
+                HStack(spacing: 12) {
+                    if !meeting.attendeeNames.isEmpty {
+                        Label(meeting.attendeeNames.joined(separator: ", "), systemImage: "person.crop.rectangle.stack")
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help("Invited, per your calendar")
+                    }
+                    if let link = meeting.meetingLink, let url = URL(string: link) {
+                        Link(destination: url) {
+                            Label(url.host ?? "link", systemImage: "video")
+                        }
+                    }
+                }
+                .font(Theme.Typography.caption)
+                .foregroundStyle(Theme.Colors.ink2)
+            }
+
             // What the AI cost for this call (estimated); old meetings have no data.
             if let usage = meeting.aiUsage {
                 aiCostRow(usage)
@@ -890,6 +909,15 @@ struct SpeakerNamePopover: View {
                 .background(Theme.Colors.chip.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
             }
 
+            // Invitees from the calendar, minus anyone already assigned to a
+            // voice: one click instead of typing. Still a confirmation, since
+            // the user chooses which invitee this voice is.
+            let taken = Set(meeting.speakerNames.values)
+            let candidates = meeting.attendeeNames.filter { !taken.contains($0) }
+            if !candidates.isEmpty {
+                FlowChips(names: candidates) { assign($0) }
+            }
+
             TextField("Type a name — e.g. Gürkan", text: $name)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit {
@@ -904,6 +932,30 @@ struct SpeakerNamePopover: View {
         .padding(12)
         .frame(width: 300)
         .onAppear { name = meeting.speakerNames[label] ?? "" }
+    }
+}
+
+/// A wrapping row of clickable name chips (calendar invitees in the naming popover).
+private struct FlowChips: View {
+    let names: [String]
+    let pick: (String) -> Void
+
+    var body: some View {
+        // Popover is 300 pt wide; a few names per row is plenty, and an
+        // invite list longer than a handful is trimmed to keep it a hint.
+        let shown = Array(names.prefix(8))
+        VStack(alignment: .leading, spacing: 6) {
+            Text("From the invite:")
+                .font(Theme.Typography.caption)
+                .foregroundStyle(Theme.Colors.ink2)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 80), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
+                ForEach(shown, id: \.self) { name in
+                    Button(name) { pick(name) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+        }
     }
 }
 

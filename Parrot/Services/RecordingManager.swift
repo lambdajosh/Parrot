@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import CoreGraphics
 import AVFoundation
+import os
 
 /// Orchestrates audio capture, transcription, and storage for a recording session.
 @MainActor
@@ -14,6 +15,9 @@ final class RecordingManager {
     let callAnalysisEngine = CallAnalysisEngine(provider: SwitchingAnalysisProvider())
     let knowledgeBase = KnowledgeBaseService()
     let profileStore = ProfileStore()
+    /// Calendar context for recordings and the scheduler (opt-in, EventKit).
+    let calendar = CalendarService()
+    static let oslog = Logger(subsystem: "com.uygar.parrot", category: "recording")
 
     /// Optional one-line context for the next call, set from the dashboard.
     var nextCallBrief = ""
@@ -22,6 +26,9 @@ final class RecordingManager {
     private(set) var recordingStartTime: Date?
     private(set) var elapsedTime: TimeInterval = 0
     private(set) var currentMeeting: Meeting?
+    /// When the last transcript line landed this recording; the scheduler's
+    /// "the call has gone quiet" clock.
+    private(set) var lastSegmentAt: Date?
 
     /// Guards against a second startRecording slipping in during the `await`s
     /// before isRecording is set — which would start a duplicate transcription
@@ -211,6 +218,13 @@ final class RecordingManager {
         meeting.brief = nextCallBrief.nilIfEmpty
         meeting.profileSnapshotData = profile.flatMap { try? JSONEncoder().encode($0.kinds) }
 
+        // The calendar knows what this meeting is: title, people, agenda, link.
+        // A typed brief wins; the calendar fills the gaps.
+        if let event = calendar.currentMeeting(at: .now, leadIn: MeetingScheduler.startLead) {
+            meeting.applyCalendarContext(event)
+            Self.oslog.log("matched calendar event: \(event.title, privacy: .public), \(event.otherNames.count, privacy: .public) other attendees")
+        }
+
         // Set up audio capture. On failure, remove the just-inserted meeting —
         // otherwise it lingers as a ghost .recording row until the next launch's
         // orphan reconciliation flags it "interrupted".
@@ -251,10 +265,11 @@ final class RecordingManager {
         // Start transcription and the copilot loop
         transcriptionEngine.startTranscribing(meetingStartTime: .now)
         callAnalysisEngine.provider.resetUsage()  // this call's token meter starts at zero
-        callAnalysisEngine.start(profile: profile, brief: nextCallBrief)
+        callAnalysisEngine.start(profile: profile, brief: meeting.brief ?? nextCallBrief)
 
         currentMeeting = meeting
         recordingStartTime = .now
+        lastSegmentAt = nil
         isRecording = true
 
         // Start elapsed time timer
@@ -533,6 +548,7 @@ final class RecordingManager {
         // is the same registered instance in the same context, set before any
         // segment can arrive.
         guard let modelContext, let meeting = currentMeeting else { return }
+        lastSegmentAt = .now
 
         // Speaker bleed: without headphones the mic hears the speakers, the
         // AEC attenuates but can't always erase it, and the residual decodes —

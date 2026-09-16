@@ -263,6 +263,7 @@ enum HelpShots {
             SettingsView(isEmbedded: false, initialSection: section)
                 .environment(rm)
                 .environment(rm.profileStore)
+                .environment(rm.calendar)
                 .environment(AppSession())
                 .modelContainer(container)
         }
@@ -298,7 +299,7 @@ enum HelpShots {
 
         shot("dashboard.png", size: .init(width: 1000, height: 620),
              DashboardView(selectedMeeting: .constant(nil), showDashboard: .constant(true))
-                .environment(rm).environment(rm.profileStore).environment(AppSession())
+                .environment(rm).environment(rm.profileStore).environment(rm.calendar).environment(AppSession())
                 .modelContainer(container))
 
         // Onboarding, real sheet geometry (500x600): if a step ever outgrows

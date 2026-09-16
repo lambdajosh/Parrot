@@ -78,6 +78,9 @@ targets:
         # User-picked files (knowledge base imports, audio import) + Downloads.
         com.apple.security.files.user-selected.read-write: true
         com.apple.security.files.downloads.read-write: true
+        # Calendar context (EventKit): the meeting's title, invitees, agenda
+        # and video link, read from the local Calendar app copy. Opt-in.
+        com.apple.security.personal-information.calendars: true
         # Sparkle's installer XPC service lives outside the sandbox so it can
         # replace the app bundle. Without these two names self-updating fails
         # silently. The downloader service isn't needed — we have network.client.
@@ -98,6 +101,11 @@ targets:
         # prompt (Core Audio process tap). This replaces the Screen Recording
         # ask on modern macOS; without the key the tap is silently denied.
         NSAudioCaptureUsageDescription: "Parrot records your meeting's audio (what you hear) to transcribe it on-device. It never sees your screen."
+        # Calendar access (EventKit, macOS 14+ full-access key plus the legacy
+        # one): names recordings after the event, seeds the brief with
+        # invitees and agenda, and lets Parrot start recording on schedule.
+        NSCalendarsFullAccessUsageDescription: "Parrot reads your calendar to name each recording after its meeting, note who was invited, and start recording when a call begins. Nothing is written to your calendar."
+        NSCalendarsUsageDescription: "Parrot reads your calendar to name each recording after its meeting, note who was invited, and start recording when a call begins. Nothing is written to your calendar."
         # Points Finder/Dock at the asset-catalog icon (asset compiler doesn't
         # inject this when the Info.plist is static).
         CFBundleIconName: AppIcon

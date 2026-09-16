@@ -7,15 +7,16 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 
 | File | L | Purpose |
 |---|---|---|
-| `Parrot/ParrotApp.swift` | 112 | `@main`; parses CLI harness flags before the SwiftUI `App` starts |
-| `Parrot/ProfileTest.swift` | 1093 | `--profile-test`: headless logic harness, ~60 assertions |
-| `Parrot/SnapshotTool.swift` | 522 | Offscreen PNG renderers + transcribe/analyze harnesses |
+| `Parrot/ParrotApp.swift` | 181 | `@main`; parses CLI harness flags before the SwiftUI `App` starts |
+| `Parrot/ProfileTest.swift` | 1189 | `--profile-test`: headless logic harness, ~60 assertions |
+| `Parrot/SnapshotTool.swift` | 916 | Offscreen PNG renderers + transcribe/analyze harnesses |
 
 ## Models (SwiftData `@Model` + Codable values)
 
 | File | L | Purpose |
 |---|---|---|
-| `Models/Meeting.swift` | 339 | `Meeting` record + `MeetingStatus` lifecycle + per-speaker names/embeddings + truncate/split |
+| `Models/Meeting.swift` | 369 | `Meeting` record + `MeetingStatus` lifecycle + per-speaker names/embeddings + truncate/split |
+| `Models/ScheduledMeeting.swift` | 125 | Calendar event value type: video-link detection, Meet boilerplate stripping, current/next matching, copilot brief |
 | `Models/TranscriptSegment.swift` | 34 | One diarized, timestamped utterance |
 | `Models/Insight.swift` | 60 | `CallInsight` (stored) and `Insight` (live value) |
 | `Models/CallProfile.swift` | 92 | Per-call-type prompt config: kinds, sentiment gauges |
@@ -28,14 +29,16 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 
 | File | L | Purpose |
 |---|---|---|
-| `Services/RecordingManager.swift` | 800 | Orchestrates a recording session end-to-end; the hub |
+| `Services/RecordingManager.swift` | 816 | Orchestrates a recording session end-to-end; the hub |
 | `Services/AudioCaptureManager.swift` | 1135 | System audio (tap on 15+, SCK on 14.x/rescue) + mic tap, buffer conversion |
 | `Services/SystemAudioTap.swift` | 250 | Core Audio process tap: audio-only capture, no Screen Recording (macOS 15+) |
 | `Services/EchoCanceller.swift` | 138 | Swift wrapper over vendored SpeexDSP AEC |
 | `Services/TranscriptionEngine.swift` | 947 | On-device WhisperKit; `AudioSource` routing; live preview decode |
 | `Services/CloudTranscription.swift` | 355 | Opt-in Groq (batch) and Deepgram (streaming) backends + WAV encode |
 | `Services/AudioSplitter.swift` | 85 | Cuts one PCM recording into two .caf halves at a time; sibling part naming |
-| `Services/Notifier.swift` | 45 | macOS user notifications (system audio lost/back); no-op without a bundle |
+| `Services/CalendarService.swift` | 110 | EventKit reader (opt-in): events around now, permission flow, `ScheduledMeeting` mapping |
+| `Services/MeetingScheduler.swift` | 210 | Hands-free planner: reminders, auto start/switch/stop from the calendar; pure `plan` |
+| `Services/Notifier.swift` | 83 | macOS user notifications + Start Recording action; no-op without a bundle |
 | `Services/DiarizationEngine.swift` | 105 | FluidAudio offline pyannote diarization (CoreML): labels + per-speaker embeddings |
 | `Services/AnalysisProvider.swift` | 605 | `AnalysisProvider` protocol, request/result types, prompt building, **Keychain helpers** (~L575) |
 | `Services/OpenAICompatibleProvider.swift` | 528 | OpenAI-shaped LLM client (incl. Ollama); provider switching |
@@ -55,20 +58,20 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 |---|---|---|
 | `Views/ContentView.swift` | 190 | Root split view + empty state + corner bug button |
 | `Views/SidebarView.swift` | 361 | Meeting list, rows, talk-ratio strip |
-| `Views/DashboardView.swift` | 329 | Landing stats + recent meetings |
+| `Views/DashboardView.swift` | 350 | Landing stats + recent meetings |
 | `Views/LiveRecordingView.swift` | 573 | In-call screen: chat bubbles, mic level, side tabs |
 | `Views/CopilotPanelView.swift` | 729 | Live insight cards, pinned blockers, suggested replies |
-| `Views/MeetingDetailView.swift` | 1109 | Post-call tabs: transcript, insights, report; speaker naming popover + confirm card |
+| `Views/MeetingDetailView.swift` | 1161 | Post-call tabs: transcript, insights, report; speaker naming popover + confirm card |
 | `Views/BugReportSheet.swift` | 150 | Bug/idea report form + the corner ladybug button |
 | `Views/ReportContentView.swift` | 267 | Report section cards, talk-ratio bar, prose blocks |
 | `Views/SentimentStripView.swift` | 60 | Sentiment gauge strip |
-| `Views/SettingsView.swift` | 872 | All settings sections, provider keys, KB docs |
+| `Views/SettingsView.swift` | 938 | All settings sections, provider keys, KB docs |
 | `Views/ProfilesSettingsView.swift` | 689 | Call-profile editor: kinds, gauges, icon picker |
 | `Views/OnboardingView.swift` | 340 | Permission walkthrough + model choice |
 | `Views/OllamaModelStatusView.swift` | 136 | Local model presence/pull status |
 | `Views/AudioImport.swift` | 108 | Drag-drop / file import of existing audio |
 | `Views/AppCommands.swift` | 252 | `AppSession`, menu commands, context menus, notifications |
-| `Views/MenuBarView.swift` | 59 | Menu bar extra |
+| `Views/MenuBarView.swift` | 64 | Menu bar extra |
 | `Views/Theme.swift` | 151 | Single source of colors, fonts, metrics |
 
 ## Build & non-source

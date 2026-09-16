@@ -7,6 +7,7 @@ import SwiftUI
 struct MenuBarView: View {
     @Environment(RecordingManager.self) private var recordingManager
     @Environment(ProfileStore.self) private var profileStore
+    @Environment(CalendarService.self) private var calendar
     @Environment(\.modelContext) private var modelContext
 
     var body: some View {
@@ -39,6 +40,10 @@ struct MenuBarView: View {
                 }
             }
             .disabled(!recordingManager.transcriptionEngine.isReady)
+
+            if let next = calendar.nextMeeting() {
+                Text("Next: \(next.title) at \(next.start.formatted(date: .omitted, time: .shortened))")
+            }
         }
 
         Divider()

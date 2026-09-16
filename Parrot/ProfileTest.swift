@@ -45,6 +45,8 @@ enum ProfileTest {
         testExportLocation()
         testMeetingSplit()
         testAudioSplitter()
+        testScheduledMeeting()
+        testMeetingScheduler()
         print(failures == 0 ? "ALL PASS" : "FAILURES: \(failures)")
         exit(failures == 0 ? 0 : 1)
     }
@@ -936,6 +938,100 @@ enum ProfileTest {
               (try? AudioSplitter.split(fileAt: source, at: 5, head: dir.appendingPathComponent("x.caf"),
                                         tail: dir.appendingPathComponent("y.caf"))) == nil
                 && !FileManager.default.fileExists(atPath: dir.appendingPathComponent("x.caf").path))
+    }
+
+    // Calendar context: link detection, Meet boilerplate stripping, matching.
+    static func testScheduledMeeting() {
+        typealias M = ScheduledMeeting
+        let t0 = Date(timeIntervalSince1970: 1_760_000_000)
+        func mk(_ id: String, _ startMin: Double, _ lenMin: Double, link: String? = "https://meet.google.com/abc-defg-hij",
+                declined: Bool = false) -> M {
+            M(id: id, title: id, start: t0.addingTimeInterval(startMin * 60), end: t0.addingTimeInterval((startMin + lenMin) * 60),
+              videoLink: link.flatMap(URL.init(string:)), isDeclined: declined)
+        }
+        check("link: Meet found in notes among prose",
+              M.videoLink(in: [nil, "Agenda\nJoin: https://meet.google.com/abc-defg-hij.\nBye"])?.absoluteString == "https://meet.google.com/abc-defg-hij")
+        check("link: Zoom counts as a video call",
+              M.videoLink(in: ["https://us02web.zoom.us/j/1234567890?pwd=x"])?.host == "us02web.zoom.us")
+        check("link: none in a plain room name", M.videoLink(in: ["Room 4B", nil]) == nil)
+
+        let notes = """
+        Quarterly review prep
+        Bring the numbers.
+
+        -::~:~::~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~::~:~::-
+        Join with Google Meet: https://meet.google.com/abc-defg-hij
+        Or dial: (US) +1 555-0100 PIN: 123#
+        -::~:~::~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~::~:~::-
+        """
+        check("agenda: Meet block stripped, text kept",
+              M.agenda(from: notes) == "Quarterly review prep\nBring the numbers.")
+        check("agenda: only boilerplate gives nil",
+              M.agenda(from: "Join with Google Meet: https://meet.google.com/x-y-z\nOr dial: 1") == nil)
+        var withPeople = mk("Review", 0, 30)
+        withPeople.attendees = [.init(name: "Me", email: "me@x.com", isMe: true), .init(name: "Ada", email: nil, isMe: false),
+                                .init(name: "Grace", email: nil, isMe: false)]
+        withPeople.notes = notes
+        check("brief names the event, the others, and the agenda",
+              withPeople.brief == "Calendar event: Review. With Ada, Grace. Agenda: Quarterly review prep\nBring the numbers.")
+        check("otherNames leaves the user out", withPeople.otherNames == ["Ada", "Grace"])
+
+        let a = mk("A", 0, 30), b = mk("B", 30, 30), room = mk("Room", 0, 60, link: nil), skip = mk("Skip", 0, 30, declined: true)
+        let all = [skip, room, b, a]
+        check("current: video call beats a linkless event covering the same time",
+              M.current(in: all, at: t0.addingTimeInterval(10 * 60))?.id == "A")
+        check("current: back-to-back hands over at the second start",
+              M.current(in: all, at: t0.addingTimeInterval(30 * 60))?.id == "B")
+        check("current: lead-in makes an upcoming call current",
+              M.current(in: [b], at: t0.addingTimeInterval(29 * 60), leadIn: 60)?.id == "B"
+                && M.current(in: [b], at: t0.addingTimeInterval(28 * 60), leadIn: 60) == nil)
+        check("current: declined never matches", M.current(in: [skip], at: t0.addingTimeInterval(60)) == nil)
+        check("current: videoOnly ignores the room booking",
+              M.current(in: [room], at: t0.addingTimeInterval(60), videoOnly: true) == nil
+                && M.current(in: [room], at: t0.addingTimeInterval(60))?.id == "Room")
+        check("next: earliest unstarted video call", M.next(in: all, after: t0.addingTimeInterval(60))?.id == "B")
+        check("next: nothing after the last call", M.next(in: all, after: t0.addingTimeInterval(61 * 60)) == nil)
+    }
+
+    // The hands-free planner: reminders, auto start, switch at the next call, stop when quiet.
+    static func testMeetingScheduler() {
+        typealias S = MeetingScheduler
+        let t0 = Date(timeIntervalSince1970: 1_760_000_000)
+        func mk(_ id: String, _ startMin: Double, _ lenMin: Double) -> ScheduledMeeting {
+            ScheduledMeeting(id: id, title: id, start: t0.addingTimeInterval(startMin * 60),
+                             end: t0.addingTimeInterval((startMin + lenMin) * 60), videoLink: URL(string: "https://meet.google.com/a-b-c"))
+        }
+        let a = mk("A", 0, 30), b = mk("B", 30, 30)
+        func snap(now: Double, current: ScheduledMeeting? = nil, next: ScheduledMeeting? = nil, recording: ScheduledMeeting? = nil,
+                  startedAt: Double? = nil, lastLine: Double? = nil, remind: Bool = true, auto: Bool = true,
+                  reminded: Set<String> = [], suppressed: Set<String> = []) -> S.Snapshot {
+            S.Snapshot(now: t0.addingTimeInterval(now * 60), current: current, next: next, isRecording: recording != nil,
+                       recordingEvent: recording, recordingStartedAt: startedAt.map { t0.addingTimeInterval($0 * 60) },
+                       lastActivityAt: lastLine.map { t0.addingTimeInterval($0 * 60) }, remindersEnabled: remind,
+                       autoRecordEnabled: auto, reminded: reminded, suppressed: suppressed)
+        }
+        check("plan: reminds inside the lead window", S.plan(snap(now: -1.5, next: a)) == [.remind(a), ])
+        check("plan: no reminder outside the window or twice",
+              S.plan(snap(now: -5, next: a)).isEmpty && S.plan(snap(now: -1, next: a, reminded: ["A"])).isEmpty)
+        check("plan: reminders off means none", S.plan(snap(now: -1, next: a, remind: false)).isEmpty)
+        check("plan: auto starts the current call", S.plan(snap(now: 0, current: a, remind: false)) == [.start(a)])
+        check("plan: auto off never starts", S.plan(snap(now: 0, current: a, remind: false, auto: false)).isEmpty)
+        check("plan: a call the user stopped is not restarted",
+              S.plan(snap(now: 5, current: a, remind: false, suppressed: ["A"])).isEmpty)
+        check("plan: switches when the next call starts",
+              S.plan(snap(now: 30, current: b, recording: a, startedAt: 0, lastLine: 29.9, remind: false)) == [.switchTo(b)])
+        check("plan: no switch during the next call's lead-in",
+              S.plan(snap(now: 29.5, current: b, recording: a, startedAt: 0, lastLine: 29, remind: false)).isEmpty)
+        check("plan: a running-over call that is still talking is not cut",
+              S.plan(snap(now: 40, recording: a, startedAt: 0, lastLine: 39.5, remind: false)).isEmpty)
+        check("plan: stops once the ended call has gone quiet",
+              S.plan(snap(now: 40, recording: a, startedAt: 0, lastLine: 37, remind: false)) == [.stop(a)])
+        check("plan: a recording with no lines yet uses its start as the idle clock",
+              S.plan(snap(now: 33, recording: a, startedAt: 0, remind: false)) == [.stop(a)]
+                && S.plan(snap(now: 30.5, recording: a, startedAt: 29.5, remind: false)).isEmpty)
+        check("plan: a manual recording with no event is left alone",
+              S.plan(snap(now: 40, current: b, recording: nil, remind: false)) == [.start(b)])
+        check("plan: end-idle tolerates goodbyes", S.endIdle >= 60 && S.startLead <= S.reminderLead)
     }
 
     static func testDiarizedLabel() {

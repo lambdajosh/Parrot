@@ -1,12 +1,13 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import ServiceManagement
 
 /// Settings pages, System Settings-style: topics on the left, ONE topic per
 /// page on the right. Content rules: controls at body size, hints one line at
 /// secondary size — long explanations live in the control's own label instead.
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, recording, transcription, copilot, apiKeys, knowledge, profiles
+    case general, recording, meetings, transcription, copilot, apiKeys, knowledge, profiles
 
     var id: String { rawValue }
 
@@ -14,6 +15,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "General"
         case .recording: "Recording"
+        case .meetings: "Meetings"
         case .transcription: "Transcription"
         case .copilot: "Copilot"
         case .apiKeys: "API Keys"
@@ -26,6 +28,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "gearshape"
         case .recording: "mic"
+        case .meetings: "calendar"
         case .transcription: "text.quote"
         case .copilot: "sparkles"
         case .apiKeys: "key"
@@ -47,7 +50,14 @@ struct SettingsView: View {
     }
 
     @Environment(RecordingManager.self) private var recordingManager
+    @Environment(CalendarService.self) private var calendar
     @AppStorage("whisperModel") private var selectedModel = "base"
+    @AppStorage(CalendarService.enabledKey) private var calendarContextEnabled = false
+    @AppStorage(MeetingScheduler.remindKey) private var meetingReminders = false
+    @AppStorage(MeetingScheduler.autoRecordKey) private var autoRecordMeetings = false
+    /// Mirrors SMAppService so the toggle survives a relaunch without a
+    /// second copy of the truth, like the Sparkle toggle below.
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @AppStorage("appearance") private var appearance = Appearance.system
     @AppStorage("copilotEnabled") private var copilotEnabled = false
     @AppStorage("copilotProvider") private var copilotProvider = CopilotProviderKind.claude.rawValue
@@ -99,7 +109,8 @@ struct SettingsView: View {
     private var settingsFingerprint: String {
         "\(selectedModel)|\(appearance)|\(copilotEnabled)|\(transcriptionLanguage)|"
             + "\(customVocabulary)|\(echoCancellation)|\(transcriptionBackend)|\(polishAfterCall)|"
-            + "\(copilotPace)|\(copilotWindow)|\(livePreview)|\(autoSaveTranscripts)|\(transcriptDirectory)"
+            + "\(copilotPace)|\(copilotWindow)|\(livePreview)|\(autoSaveTranscripts)|\(transcriptDirectory)|"
+            + "\(calendarContextEnabled)|\(meetingReminders)|\(autoRecordMeetings)|\(launchAtLogin)"
     }
 
     private func flashSavedToast() {
@@ -146,6 +157,7 @@ struct SettingsView: View {
                 switch section {
                 case .general: generalPage
                 case .recording: recordingPage
+                case .meetings: meetingsPage
                 case .transcription: transcriptionPage
                 case .copilot: copilotPage
                 case .apiKeys: apiKeysPage
@@ -285,6 +297,60 @@ struct SettingsView: View {
 
             Section("Input") {
                 Hint("System audio is captured via ScreenCaptureKit; the microphone uses your default input device.")
+            }
+        }
+    }
+
+    // MARK: - Meetings
+
+    private var meetingsPage: some View {
+        Form {
+            Section("Calendar") {
+                Toggle("Use my calendar for meeting details", isOn: $calendarContextEnabled)
+                    .onChange(of: calendarContextEnabled) { _, on in
+                        calendar.isEnabled = on
+                        if on { Task { _ = await calendar.requestAccess() } }
+                    }
+                Hint("Names each recording after the calendar event, notes who was invited, and gives the copilot the agenda as its brief. Reads the Calendar app on this Mac; your Google Calendar shows up as long as it is added there.")
+                if calendarContextEnabled {
+                    LabeledContent("Access") {
+                        if calendar.hasAccess {
+                            Text("Granted").foregroundStyle(Theme.Colors.good)
+                        } else {
+                            Button("Grant Calendar Access…") { Task { _ = await calendar.requestAccess() } }
+                        }
+                    }
+                    if calendar.hasAccess {
+                        LabeledContent("Up next") {
+                            Text(calendar.nextMeeting().map { "\($0.title) at \($0.start.formatted(date: .omitted, time: .shortened))" }
+                                 ?? "No video calls in the next 24 hours")
+                                .font(Theme.Typography.secondary)
+                                .foregroundStyle(Theme.Colors.ink2)
+                        }
+                    }
+                    if copilotEnabled, copilotProvider != CopilotProviderKind.ollama.rawValue {
+                        Hint("Attendee names and the agenda become part of the brief, so with a cloud copilot they are sent to that provider along with the transcript.")
+                    }
+                }
+            }
+
+            Section("Hands-free") {
+                Toggle("Remind me when a video call is about to start", isOn: $meetingReminders)
+                    .disabled(!calendarContextEnabled)
+                Hint("A notification \(Int(MeetingScheduler.reminderLead / 60)) minutes before, with a Start Recording button.")
+                Toggle("Record scheduled video calls automatically", isOn: $autoRecordMeetings)
+                    .disabled(!calendarContextEnabled)
+                Hint("Starts a minute before each call with a Meet, Zoom, or Teams link, and stops once the call has ended and gone quiet. Back-to-back calls become separate meetings. Stopping by hand keeps that meeting off until the next one.")
+                Toggle("Open Parrot at login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, on in
+                        do {
+                            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+                        } catch {
+                            NSLog("Parrot: login item change failed: \(error.localizedDescription)")
+                        }
+                        launchAtLogin = SMAppService.mainApp.status == .enabled
+                    }
+                Hint("Hands-free recording only works while Parrot is running. The menu bar icon stays available with the window closed.")
             }
         }
     }

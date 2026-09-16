@@ -62,6 +62,13 @@ final class Meeting {
     /// Lines removed, summed over every trim on this meeting.
     var truncatedLineCount: Int = 0
 
+    /// The calendar event this recording was matched to at start (EventKit
+    /// identifier), its video-call link, and the invitees as JSON
+    /// [ScheduledMeeting.Attendee]. All defaulted → old rows migrate.
+    var calendarEventID: String? = nil
+    var meetingLink: String? = nil
+    var attendeesData: Data? = nil
+
     @Relationship(deleteRule: .cascade, inverse: \TranscriptSegment.meeting)
     var segments: [TranscriptSegment]
 
@@ -133,6 +140,29 @@ final class Meeting {
         truncatedLineCount += tail.count
         try? context.save()
         return tail.count
+    }
+
+    // MARK: - Calendar context
+
+    var attendees: [ScheduledMeeting.Attendee] {
+        guard let data = attendeesData else { return [] }
+        return (try? JSONDecoder().decode([ScheduledMeeting.Attendee].self, from: data)) ?? []
+    }
+
+    /// Invitees other than the user, for the header and as naming candidates.
+    var attendeeNames: [String] {
+        attendees.filter { !$0.isMe && !$0.name.isEmpty }.map(\.name)
+    }
+
+    /// Takes the calendar's word for what this meeting is. The title is only
+    /// replaced while it is still the generated default, so a title the user
+    /// typed stays; the brief fills in only when none was typed.
+    func applyCalendarContext(_ event: ScheduledMeeting) {
+        if title == Self.defaultTitle(for: date) { title = event.title }
+        if brief?.nilIfEmpty == nil { brief = event.brief }
+        calendarEventID = event.id
+        meetingLink = event.videoLink?.absoluteString
+        attendeesData = try? JSONEncoder().encode(event.attendees)
     }
 
     // MARK: - Split

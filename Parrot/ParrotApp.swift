@@ -65,6 +65,12 @@ struct ParrotMain {
 final class ParrotAppDelegate: NSObject, NSApplicationDelegate {
     weak var recordingManager: RecordingManager?
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Notification banners need their delegate before the first one is
+        // posted, and the "Start Recording" button needs its category.
+        Notifier.shared.install()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let manager = recordingManager, manager.isRecording || manager.isStopping else {
             return .terminateNow
@@ -84,6 +90,7 @@ struct ParrotApp: App {
     @NSApplicationDelegateAdaptor(ParrotAppDelegate.self) private var appDelegate
     @State private var recordingManager = RecordingManager()
     @State private var appSession = AppSession()
+    @State private var scheduler: MeetingScheduler?
     // Live, not a launch-time snapshot: Settings and Help → Show Welcome Tour
     // re-open the tour by clearing this key, and the sheet presents without a
     // relaunch. Completing the tour sets it back through the same binding.
@@ -113,6 +120,7 @@ struct ParrotApp: App {
                 .environment(recordingManager)
                 .environment(recordingManager.profileStore)
                 .environment(appSession)
+                .environment(recordingManager.calendar)
                 .sheet(isPresented: showOnboarding) {
                     OnboardingView(isPresented: showOnboarding)
                         .environment(recordingManager)
@@ -121,6 +129,13 @@ struct ParrotApp: App {
                 .onAppear {
                     applyAppearance()
                     appDelegate.recordingManager = recordingManager
+                    if scheduler == nil {
+                        let s = MeetingScheduler(calendar: recordingManager.calendar,
+                                                 recordingManager: recordingManager,
+                                                 modelContext: sharedModelContainer.mainContext)
+                        s.start()
+                        scheduler = s
+                    }
                 }
                 .onChange(of: appearance) { applyAppearance() }
         }
@@ -139,6 +154,7 @@ struct ParrotApp: App {
             MenuBarView()
                 .environment(recordingManager)
                 .environment(recordingManager.profileStore)
+                .environment(recordingManager.calendar)
                 .modelContainer(sharedModelContainer)
         } label: {
             Image(systemName: recordingManager.isRecording ? "waveform.circle.fill" : "waveform")
@@ -149,6 +165,7 @@ struct ParrotApp: App {
             SettingsView()
                 .environment(recordingManager)
                 .environment(recordingManager.profileStore)
+                .environment(recordingManager.calendar)
         }
         .modelContainer(sharedModelContainer)
     }
