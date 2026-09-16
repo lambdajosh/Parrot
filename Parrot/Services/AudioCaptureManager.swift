@@ -49,14 +49,18 @@ final class AudioCaptureManager: NSObject {
     @ObservationIgnored private var lastSystemLevelAt = Date.distantPast
     @ObservationIgnored private var lastMicLevelAt = Date.distantPast
 
-    /// Opt-in diagnostics for the "transcription dies when I join a call" bug:
-    /// one AUDIODBG log line per stream every 5 s with raw (pre-AEC) mic level,
-    /// cleaned (post-AEC) mic level, all-zero buffer counts, and SCK delivery
-    /// rate — enough to tell OS-delivered silence apart from AEC suppression.
-    /// Enable: PARROT_AUDIO_DEBUG=1 env, or `defaults write ... audioDebug -bool YES`.
+    /// Per-stream health lines in the unified log: mean level, buffer count,
+    /// and all-zero buffer count per interval, enough to tell OS-delivered
+    /// silence apart from a quiet room or AEC suppression after the fact.
+    /// Always on at one line per stream per minute ("health"), because the
+    /// 2026-09-16 dead-system-audio incident left no trace to read back: the
+    /// opt-in AUDIODBG mode (PARROT_AUDIO_DEBUG=1 env, or
+    /// `defaults write com.uygar.parrot audioDebug -bool YES`) tightens the
+    /// same lines to every 5 s.
     static let audioDebugEnabled =
         ProcessInfo.processInfo.environment["PARROT_AUDIO_DEBUG"] != nil
         || UserDefaults.standard.bool(forKey: "audioDebug")
+    static var healthInterval: TimeInterval { audioDebugEnabled ? 5 : 60 }
     @ObservationIgnored private var dbgMic = DebugAccumulator(label: "mic")
     @ObservationIgnored private var dbgSck = DebugAccumulator(label: "sck")
 
@@ -65,16 +69,22 @@ final class AudioCaptureManager: NSObject {
     /// `log show`, which silently made the field diagnostics uncollectable.
     static let oslog = Logger(subsystem: "com.uygar.parrot", category: "capture")
 
-    /// Accumulates levels between 5 s log flushes. Each instance is only touched
+    /// Accumulates levels between log flushes. Each instance is only touched
     /// from its own stream's callback thread.
     struct DebugAccumulator {
         let label: String
+        let interval: TimeInterval
+        let prefix: String
         var rawSum: Float = 0; var rawN = 0
         var cleanSum: Float = 0; var cleanN = 0
         var buffers = 0; var zeroBuffers = 0
         var lastFlush = Date()
 
-        init(label: String) { self.label = label }
+        init(label: String) {
+            self.label = label
+            interval = AudioCaptureManager.healthInterval
+            prefix = AudioCaptureManager.audioDebugEnabled ? "AUDIODBG" : "health"
+        }
 
         mutating func add(raw: Float, clean: Float?, refBacklog: Int?, extra: String = "") {
             rawSum += raw; rawN += 1
@@ -82,13 +92,13 @@ final class AudioCaptureManager: NSObject {
             buffers += 1
             if raw == 0 { zeroBuffers += 1 }
             let now = Date()
-            guard now.timeIntervalSince(lastFlush) >= 5 else { return }
+            guard now.timeIntervalSince(lastFlush) >= interval else { return }
             let rawAvg = rawN > 0 ? rawSum / Float(rawN) : 0
             let cleanAvg = cleanN > 0 ? cleanSum / Float(cleanN) : 0
             let cleanPart = clean != nil ? String(format: " clean=%.5f", cleanAvg) : ""
             let refPart = refBacklog.map { " refq=\($0)" } ?? ""
-            let line = String(format: "AUDIODBG %@ raw=%.5f%@ bufs=%d zerobufs=%d%@%@",
-                              label, rawAvg, cleanPart, buffers, zeroBuffers, refPart, extra)
+            let line = String(format: "%@ %@ raw=%.5f%@ bufs=%d zerobufs=%d%@%@",
+                              prefix, label, rawAvg, cleanPart, buffers, zeroBuffers, refPart, extra)
             AudioCaptureManager.oslog.log("\(line, privacy: .public)")
             rawSum = 0; rawN = 0; cleanSum = 0; cleanN = 0
             buffers = 0; zeroBuffers = 0
@@ -103,13 +113,18 @@ final class AudioCaptureManager: NSObject {
     /// A real mic in a silent room still carries dither noise; a sustained run of
     /// *exact* zeros is always artificial. Pure logic so --profile-test can drive
     /// it with a fake clock.
-    struct MicSignalWatchdog {
+    struct SignalWatchdog {
         enum Verdict: Equatable { case ok, lost, stillLost, recovered }
-        /// Long enough to skip transient device glitches, short enough that the
-        /// warning appears before the user wonders where their words went.
-        static let lostAfter: TimeInterval = 2
+        /// Mic fuse: long enough to skip transient device glitches, short
+        /// enough that the warning appears before the user wonders where their
+        /// words went. The system stream uses a much longer fuse, see
+        /// `systemRebuildAfter`.
+        static let micLostAfter: TimeInterval = 2
+        let lostAfter: TimeInterval
         private var zeroRunStartedAt: Date?
         private(set) var isLost = false
+
+        init(lostAfter: TimeInterval = SignalWatchdog.micLostAfter) { self.lostAfter = lostAfter }
 
         mutating func observe(meanAbs: Float, at now: Date) -> Verdict {
             guard meanAbs == 0 else {
@@ -120,7 +135,7 @@ final class AudioCaptureManager: NSObject {
             let start = zeroRunStartedAt ?? now
             zeroRunStartedAt = start
             if isLost { return .stillLost }
-            guard now.timeIntervalSince(start) >= Self.lostAfter else { return .ok }
+            guard now.timeIntervalSince(start) >= lostAfter else { return .ok }
             isLost = true
             return .lost
         }
@@ -131,9 +146,43 @@ final class AudioCaptureManager: NSObject {
     /// and the periodic reclaim attempts. Issue #12.
     private(set) var micSignalLost = false
     /// Tap-callback thread only, like the debug accumulators.
-    @ObservationIgnored private var micWatchdog = MicSignalWatchdog()
+    @ObservationIgnored private var micWatchdog = SignalWatchdog()
     /// Main thread only — collapses the per-buffer verdicts into one pending retry.
     @ObservationIgnored private var micRecoveryScheduled = false
+
+    /// The system-audio twin of the mic watchdog. Two real failures (2026-09-15
+    /// and 2026-09-16) had the tap keep delivering buffers of exact digital
+    /// zeros for 6 and 61 minutes until the recording was stopped, while the
+    /// mic kept working; no error surfaced anywhere. Calibrated on the six
+    /// recordings around them (4.7 h of calls): normal call audio never held
+    /// exact zeros longer than 59 s. So 20 s of zeros starts a quiet capture
+    /// rebuild (harmless if the lull was real), and 90 s of zeros tells the
+    /// user, since by then it has outlasted every healthy silence measured.
+    static let systemRebuildAfter: TimeInterval = 20
+    static let systemNotifyAfter: TimeInterval = 90
+    /// True while the system feed is exact zeros past `systemRebuildAfter`.
+    /// Drives the device-bar warning and the periodic rebuilds.
+    private(set) var systemSignalLost = false
+    /// Tap/SCK callback thread only.
+    @ObservationIgnored private var systemWatchdog = SignalWatchdog(lostAfter: AudioCaptureManager.systemRebuildAfter)
+    /// Main thread only.
+    @ObservationIgnored private var systemLostAt: Date?
+    @ObservationIgnored private var systemRecoveryScheduled = false
+    @ObservationIgnored private var systemRecoveryAttempts = 0
+    @ObservationIgnored private var systemLossNotified = false
+    @ObservationIgnored private var systemRestartInFlight = false
+    /// Listener on the system object for default-output-device changes.
+    @ObservationIgnored private var outputDeviceListener: AudioObjectPropertyListenerBlock?
+
+    enum SystemRecoveryStep: Equatable { case rebuildTap, screenCaptureKit }
+
+    /// Which backend the next rebuild should use: the tap again, or, once the
+    /// outage has outlasted every healthy silence and Screen Recording is
+    /// granted, ScreenCaptureKit, which captures by a different mechanism.
+    /// Pure so --profile-test can cover it.
+    nonisolated static func systemRecoveryStep(outage: TimeInterval, screenGranted: Bool) -> SystemRecoveryStep {
+        screenGranted && outage >= systemNotifyAfter ? .screenCaptureKit : .rebuildTap
+    }
 
     private(set) var isCapturing = false
     private(set) var systemAudioURL: URL?
@@ -233,22 +282,33 @@ final class AudioCaptureManager: NSObject {
 
         inputDeviceName = Self.defaultDeviceName(input: true)
         outputDeviceName = Self.defaultDeviceName(input: false)
-        NSLog("Parrot: starting capture — input: \(inputDeviceName), output: \(outputDeviceName)")
+        Self.oslog.log("starting capture: input \(self.inputDeviceName, privacy: .public), output \(self.outputDeviceName, privacy: .public)")
 
         // Echo cancellation on by default (defeats speaker bleed without headphones).
         let aecEnabled = UserDefaults.standard.object(forKey: "echoCancellationEnabled") as? Bool ?? true
         echoCanceller = aecEnabled ? EchoCanceller() : nil
 
-        // Reset the mic watchdog before any tap can fire.
-        micWatchdog = MicSignalWatchdog()
+        // Reset both watchdogs before any tap can fire.
+        micWatchdog = SignalWatchdog()
         micSignalLost = false
         micRecoveryScheduled = false
+        systemWatchdog = SignalWatchdog(lostAfter: Self.systemRebuildAfter)
+        systemSignalLost = false
+        systemLostAt = nil
+        systemRecoveryScheduled = false
+        systemRecoveryAttempts = 0
+        systemLossNotified = false
         tapEverHadSignal = false
+        dbgMic = DebugAccumulator(label: "mic")
+        // The alert for a dead system feed has to reach the user behind the
+        // call window; ask on the first recording, not at launch.
+        Notifier.shared.requestAuthorizationIfNeeded()
 
         filesClosed = false  // fresh URLs above; queues are idle, so no race
 
         try await startSystemAudioCapture()
         dbgSck = DebugAccumulator(label: captureBackend.rawValue)
+        installOutputDeviceListener()
 
         // The microphone is optional. System audio ("Them") is the core capture;
         // a missing or denied mic must NOT abort the whole recording. If mic setup
@@ -259,7 +319,7 @@ final class AudioCaptureManager: NSObject {
         } catch {
             micActive = false
             micAudioURL = nil
-            NSLog("Parrot: microphone unavailable, recording system audio only — \(error.localizedDescription)")
+            Self.oslog.error("microphone unavailable, recording system audio only: \(error.localizedDescription, privacy: .public)")
         }
 
         lastMicSignalAt = Date()  // capture start; the "dead mic" warning waits on this
@@ -277,10 +337,12 @@ final class AudioCaptureManager: NSObject {
         micActive = false
         micEverHadSignal = false
         micSignalLost = false
+        systemSignalLost = false
         audioLevel = 0
         micLevel = 0
         micPeakLevel = 0
         echoCanceller = nil
+        removeOutputDeviceListener()
 
         // Stop system audio stream (whichever backend is live)
         if #available(macOS 15.0, *), let tap = processTap as? SystemAudioTap {
@@ -312,7 +374,7 @@ final class AudioCaptureManager: NSObject {
         if let url = systemAudioURL {
             let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
             let size = (attrs?[.size] as? Int) ?? 0
-            NSLog("Parrot: system audio file finalized — \(size) bytes")
+            Self.oslog.log("system audio file finalized: \(size, privacy: .public) bytes")
         }
     }
 
@@ -330,7 +392,7 @@ final class AudioCaptureManager: NSObject {
                 try startTapCapture()
                 return
             } catch {
-                NSLog("Parrot: process-tap capture unavailable (\(error.localizedDescription)) — falling back to ScreenCaptureKit")
+                Self.oslog.log("process-tap capture unavailable (\(error.localizedDescription, privacy: .public)), falling back to ScreenCaptureKit")
             }
             do {
                 try await startSCKCapture()
@@ -395,6 +457,136 @@ final class AudioCaptureManager: NSObject {
         }
     }
 
+    /// Tears down whichever system backend is live and starts one again:
+    /// tap-first (or ScreenCaptureKit when asked), files and downstream
+    /// untouched. Used by the watchdog, the output-device listener, and the
+    /// "retry now" control in the device bar.
+    @MainActor
+    func restartSystemAudioCapture(reason: String, preferSCK: Bool = false) async {
+        guard isCapturing, !systemRestartInFlight else { return }
+        systemRestartInFlight = true
+        defer { systemRestartInFlight = false }
+        Self.oslog.log("restarting system audio capture (\(reason, privacy: .public))")
+        if #available(macOS 15.0, *), let tap = processTap as? SystemAudioTap {
+            tap.stop()
+        }
+        processTap = nil
+        if let stream {
+            try? await stream.stopCapture()
+            self.stream = nil
+        }
+        captureBackend = .none
+        do {
+            if preferSCK {
+                do { try await startSCKCapture() } catch { try await startSystemAudioCapture() }
+            } else {
+                try await startSystemAudioCapture()
+            }
+            dbgSck = DebugAccumulator(label: captureBackend.rawValue)
+            Self.oslog.log("system audio capture restarted on \(self.captureBackend.rawValue, privacy: .public)")
+        } catch {
+            Self.oslog.error("system audio restart failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Tap/SCK thread → main. Mirrors the mic watchdog: flip the observable
+    /// flag, log with the facts a postmortem needs, and keep rebuilding until
+    /// audio flows again.
+    private func handleSystemWatchdog(_ verdict: SignalWatchdog.Verdict) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isCapturing else { return }
+            switch verdict {
+            case .lost:
+                self.systemSignalLost = true
+                self.systemLostAt = Date().addingTimeInterval(-Self.systemRebuildAfter)
+                self.systemRecoveryAttempts = 0
+                Self.oslog.warning("system audio went to digital zeros for \(Int(Self.systemRebuildAfter), privacy: .public) s on \(self.captureBackend.rawValue, privacy: .public), output \(self.outputDeviceName, privacy: .public): rebuilding the capture")
+                self.scheduleSystemRecovery(delay: 0)
+            case .stillLost:
+                self.scheduleSystemRecovery(delay: Self.systemRebuildAfter)
+            case .recovered:
+                let outage = self.systemLostAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
+                self.systemSignalLost = false
+                self.systemLostAt = nil
+                Self.oslog.log("system audio recovered after \(outage, privacy: .public) s on \(self.captureBackend.rawValue, privacy: .public)")
+                if self.systemLossNotified {
+                    Notifier.shared.post(id: Notifier.systemAudioID,
+                                         title: "System audio is back",
+                                         body: "Parrot is hearing the other side again after \(outage) seconds of silence.")
+                }
+                self.systemLossNotified = false
+            case .ok:
+                break
+            }
+        }
+    }
+
+    /// Main thread. One pending attempt at a time, `systemRebuildAfter` apart.
+    /// Once the outage passes `systemNotifyAfter` the user gets a notification
+    /// and, with Screen Recording granted, the rebuild switches mechanism.
+    private func scheduleSystemRecovery(delay: TimeInterval) {
+        guard !systemRecoveryScheduled, isCapturing, systemSignalLost else { return }
+        systemRecoveryScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.systemRecoveryScheduled = false
+            guard self.isCapturing, self.systemSignalLost else { return }
+            let outage = self.systemLostAt.map { Date().timeIntervalSince($0) } ?? 0
+            if !self.systemLossNotified, outage >= Self.systemNotifyAfter {
+                self.systemLossNotified = true
+                Self.oslog.error("system audio still zeros after \(Int(outage), privacy: .public) s and \(self.systemRecoveryAttempts, privacy: .public) rebuilds: notifying the user")
+                Notifier.shared.post(id: Notifier.systemAudioID,
+                                     title: "Parrot stopped hearing the other side",
+                                     body: "System audio has been silent for \(Int(outage)) seconds. Parrot keeps reconnecting; if the other side is talking and this doesn't clear, stop and restart the recording.")
+            }
+            self.systemRecoveryAttempts += 1
+            let step = Self.systemRecoveryStep(outage: outage, screenGranted: CGPreflightScreenCaptureAccess())
+            let attempt = self.systemRecoveryAttempts
+            Task { @MainActor in
+                await self.restartSystemAudioCapture(
+                    reason: "zero signal for \(Int(outage)) s, attempt \(attempt)",
+                    preferSCK: step == .screenCaptureKit)
+            }
+        }
+    }
+
+    private static let defaultOutputAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+
+    /// The process tap follows the output route it was created on. When the
+    /// default output device changes mid-call (AirPods connect or drop, a dock
+    /// wakes up, the call app switches devices) the tap can keep delivering
+    /// buffers that are all zeros. Log the switch, which is exactly the fact a
+    /// postmortem needs, and rebuild the capture on the new route right away
+    /// instead of waiting for the watchdog's fuse.
+    private func installOutputDeviceListener() {
+        removeOutputDeviceListener()
+        var addr = Self.defaultOutputAddress
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isCapturing else { return }
+                let name = Self.defaultDeviceName(input: false)
+                Self.oslog.log("default output device changed: \(self.outputDeviceName, privacy: .public) -> \(name, privacy: .public)")
+                self.outputDeviceName = name
+                if self.captureBackend == .tap {
+                    await self.restartSystemAudioCapture(reason: "output device changed to \(name)")
+                }
+            }
+        }
+        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &addr, .main, listener) == noErr {
+            outputDeviceListener = listener
+        }
+    }
+
+    private func removeOutputDeviceListener() {
+        guard let listener = outputDeviceListener else { return }
+        var addr = Self.defaultOutputAddress
+        AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &addr, .main, listener)
+        outputDeviceListener = nil
+    }
+
     // MARK: - System Audio (ScreenCaptureKit)
 
     private func startSCKCapture() async throws {
@@ -444,22 +636,29 @@ final class AudioCaptureManager: NSObject {
         // Persist everyone else's voice ("Them") as PCM.
         appendAudio(pcmBuffer, to: .system)
 
+        let level = Self.meanAbs(Self.floats(from: pcmBuffer))
+
         // First nonzero sample through the tap is the only readable proof of
         // the System Audio TCC grant — persist it for PermissionFlow.
-        if captureBackend == .tap, !tapEverHadSignal,
-           Self.meanAbs(Self.floats(from: pcmBuffer)) > 0 {
+        if captureBackend == .tap, !tapEverHadSignal, level > 0 {
             tapEverHadSignal = true
             UserDefaults.standard.set(true, forKey: PermissionFlow.tapProvenKey)
         }
 
-        if Self.audioDebugEnabled {
-            dbgSck.add(
-                raw: Self.meanAbs(Self.floats(from: pcmBuffer)),
-                clean: nil,
-                refBacklog: nil,
-                extra: String(format: " fmt=%.0fHz x%dch",
-                              pcmBuffer.format.sampleRate, pcmBuffer.format.channelCount))
+        // A tap that has never carried signal belongs to the silent-tap rescue
+        // (an unproven grant); the watchdog covers a feed that was working and
+        // then went to exact zeros.
+        if captureBackend != .tap || tapEverHadSignal {
+            let verdict = systemWatchdog.observe(meanAbs: level, at: Date())
+            if verdict != .ok { handleSystemWatchdog(verdict) }
         }
+
+        dbgSck.add(
+            raw: level,
+            clean: nil,
+            refBacklog: nil,
+            extra: String(format: " fmt=%.0fHz x%dch",
+                          pcmBuffer.format.sampleRate, pcmBuffer.format.channelCount))
 
         // Feed the same audio to the echo canceller as the far-end reference, so it
         // can subtract this from the mic. Only when it's the expected 16 kHz mono.
@@ -468,7 +667,7 @@ final class AudioCaptureManager: NSObject {
         } else if echoCanceller != nil, !echoCancellerStarved {
             // Without a reference the AEC is silently a no-op and speaker bleed
             // transcribes as "Me" — surface it once instead of hiding it.
-            NSLog("Parrot: echo canceller starved — system audio is \(pcmBuffer.format.sampleRate) Hz ×\(pcmBuffer.format.channelCount)ch, expected \(sampleRate) Hz mono")
+            Self.oslog.warning("echo canceller starved: system audio is \(pcmBuffer.format.sampleRate, privacy: .public) Hz x\(pcmBuffer.format.channelCount, privacy: .public)ch, expected \(self.sampleRate, privacy: .public) Hz mono")
             DispatchQueue.main.async { self.echoCancellerStarved = true }
         }
 
@@ -550,13 +749,11 @@ final class AudioCaptureManager: NSObject {
                 let verdict = self.micWatchdog.observe(meanAbs: Self.meanAbs(micFloats), at: Date())
                 if verdict != .ok { self.handleMicWatchdog(verdict) }
                 let cleaned = self.echoCanceller?.process(mic: micFloats) ?? micFloats
-                if Self.audioDebugEnabled {
-                    self.dbgMic.add(
-                        raw: Self.meanAbs(micFloats),
-                        clean: cleaned.isEmpty ? nil : Self.meanAbs(cleaned),
-                        refBacklog: self.echoCanceller?.referenceBacklog,
-                        extra: String(format: " devfmt=%.0fHz", inputFormat.sampleRate))
-                }
+                self.dbgMic.add(
+                    raw: Self.meanAbs(micFloats),
+                    clean: cleaned.isEmpty ? nil : Self.meanAbs(cleaned),
+                    refBacklog: self.echoCanceller?.referenceBacklog,
+                    extra: String(format: " devfmt=%.0fHz", inputFormat.sampleRate))
                 guard !cleaned.isEmpty,
                       let cleanedBuffer = Self.makeBuffer(cleaned, format: targetFormat) else { return }
 
@@ -599,7 +796,7 @@ final class AudioCaptureManager: NSObject {
             try startMicCapture()
             micActive = true
             inputDeviceName = Self.defaultDeviceName(input: true)
-            NSLog("Parrot: mic restarted after device change — input: \(inputDeviceName)")
+            Self.oslog.log("mic restarted after device change: input \(self.inputDeviceName, privacy: .public)")
             // ponytail: the mic .caf keeps writing continuously, so its file
             // timeline compresses by the dead gap (post-call polish would place
             // late "Me" words early); pad silence on restart if that matters.
@@ -607,7 +804,7 @@ final class AudioCaptureManager: NSObject {
         } catch {
             micActive = false
             guard attempt < 10 else {
-                NSLog("Parrot: mic restart gave up after \(attempt) retries — \(error.localizedDescription)")
+                Self.oslog.error("mic restart gave up after \(attempt, privacy: .public) retries: \(error.localizedDescription, privacy: .public)")
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -621,7 +818,7 @@ final class AudioCaptureManager: NSObject {
     /// mic is gone, the rebuild reclaims it instantly; if not, the fresh tap
     /// keeps reporting zeros and we simply try again. Either way the state is
     /// visible instead of the recording dying in silence.
-    private func handleMicWatchdog(_ verdict: MicSignalWatchdog.Verdict) {
+    private func handleMicWatchdog(_ verdict: SignalWatchdog.Verdict) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             switch verdict {
@@ -686,7 +883,7 @@ final class AudioCaptureManager: NSObject {
                 }
                 try file.write(from: copy)
             } catch {
-                NSLog("Parrot: \(stream) audio write failed — \(error.localizedDescription)")
+                Self.oslog.error("\(String(describing: stream), privacy: .public) audio write failed: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

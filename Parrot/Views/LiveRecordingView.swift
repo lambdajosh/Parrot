@@ -165,6 +165,18 @@ struct LiveRecordingView: View {
                     .help("macOS is delivering pure silence from the microphone — usually a call app (browser meeting, Zoom) holding it. Parrot retries automatically and recovers the moment the mic frees up. Everyone else's audio keeps recording meanwhile.")
             }
 
+            if cap.systemSignalLost {
+                Button {
+                    Task { await cap.restartSystemAudioCapture(reason: "retry now from the device bar") }
+                } label: {
+                    Label("other side went silent, reconnecting (click to retry now)", systemImage: "speaker.slash.circle.fill")
+                        .font(.appCaption2)
+                        .foregroundStyle(Theme.Colors.warn)
+                }
+                .buttonStyle(.plain)
+                .help("System audio has been exact digital silence for a while, which is how a broken capture looks (a real quiet call still carries noise). Parrot rebuilds the capture on its own every 20 s and notifies you after 90 s; click to retry immediately. If the other side is talking and this stays on, stop and restart the recording.")
+            }
+
             if cap.echoCancellerStarved {
                 Label("echo cancel inactive", systemImage: "waveform.slash")
                     .font(.appCaption2)
