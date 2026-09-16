@@ -39,6 +39,7 @@ If you find this useful or just think the idea is cool, give it a star. It'll ma
 - **Per-call notes** — Type notes live during the call (side panel) and edit them later; stored with the meeting
 - **Playback synced with the transcript** — Click a transcript line, hear that moment
 - **Import existing recordings** — Drop an audio file (m4a, mp3, wav, aac…) onto the app and it's transcribed, diarized, and summarized like any live meeting
+- **Notices when the other side goes dead** — If system audio turns to pure silence mid-call (a known failure of macOS process taps after an output-device change), Parrot rebuilds the capture within 20 s, warns in the device bar, and sends a macOS notification after 90 s. Every capture event lands in the unified log for postmortems
 - **Doesn't lose your meeting** — If the app crashes or gets force-quit mid-call, the recording is recovered with its transcript and reports on next launch. AirPods dying mid-call no longer kill the mic either
 - **Searchable history, export, menu bar extra, dark mode** — Meetings stored locally, TXT/SRT export to a folder you choose (optionally automatic after each call), quick start/stop from the menu bar
 

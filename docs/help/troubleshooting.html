@@ -23,6 +23,32 @@ seconds until it wins the mic back, usually the moment the call app lets go.
 The other side of the call records fine throughout. If your own words matter
 most, join the meeting first and start Parrot second.</p>
 
+<h2>The other side goes quiet mid-call, but my own words keep coming</h2>
+<p>The transcript keeps showing your lines and nothing from anyone else, and
+the recording's system track is dead silence from some point on. On macOS 15
+and later Parrot captures the other side through a Core Audio process tap,
+and that tap can keep running while delivering nothing but zeros, most often
+right after the output route changed (AirPods connecting or dropping, a dock
+waking up, the call app switching devices). Nothing reports an error, so
+Parrot watches the samples instead: a real call, even a quiet one, always
+carries a little noise, and only a broken capture produces exact zeros.</p>
+<p>After 20 seconds of zeros Parrot rebuilds the capture on its own and the
+device bar shows "other side went silent, reconnecting"; click it to retry
+immediately. After 90 seconds it also posts a macOS notification, and if
+Screen Recording is allowed it switches to the ScreenCaptureKit capture
+method for the next attempt. When audio returns you get a second
+notification saying so. If it never returns while people are clearly
+talking, stop and start the recording again; the meeting so far is kept.
+Parrot also rebuilds the capture whenever the default output device changes,
+before the fuse can even run.</p>
+<p>To use ScreenCaptureKit for every recording instead of the tap, run
+<code>defaults write com.uygar.parrot forceSCKCapture -bool YES</code> and
+grant Screen Recording (audio only is ever read). Every one of these events
+is written to the unified log with its reason, backend, and output device,
+plus one "health" line per minute per stream, so after a bad call this shows
+what happened:</p>
+<p><code>log show --last 2h --predicate 'subsystem == "com.uygar.parrot"'</code></p>
+
 <h2>"Loading WhisperKit model…" never finishes</h2>
 <p>A first-time model download can genuinely take minutes on slow internet,
 that's normal. But if it sits there forever with no progress, quit Parrot and

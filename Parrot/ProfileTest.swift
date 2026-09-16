@@ -390,7 +390,7 @@ enum ProfileTest {
     // The issue-#12 mic watchdog: sustained exact-zero input means the OS cut
     // the feed (a call app holds the mic); dither-level noise never triggers.
     static func testMicWatchdog() {
-        typealias W = AudioCaptureManager.MicSignalWatchdog
+        typealias W = AudioCaptureManager.SignalWatchdog
         var w = W()
         let t0 = Date(timeIntervalSince1970: 1_000)
         check("watchdog quiet dithery mic is ok", w.observe(meanAbs: 0.0001, at: t0) == .ok)
@@ -404,6 +404,26 @@ enum ProfileTest {
         _ = w2.observe(meanAbs: 0, at: t0)
         _ = w2.observe(meanAbs: 0.02, at: t0.addingTimeInterval(1))
         check("watchdog nonzero resets the zero run", w2.observe(meanAbs: 0, at: t0.addingTimeInterval(2.5)) == .ok)
+
+        // The system stream reuses the watchdog with a fuse long enough to
+        // outlast a real lull in the call (measured: up to 59 s of exact zeros
+        // in healthy recordings), so the two thresholds must sit above that.
+        check("system fuse outlasts the longest healthy silence measured",
+              AudioCaptureManager.systemRebuildAfter >= 20 && AudioCaptureManager.systemNotifyAfter > 59)
+        var sys = W(lostAfter: AudioCaptureManager.systemRebuildAfter)
+        check("system watchdog tolerates a short lull", sys.observe(meanAbs: 0, at: t0) == .ok
+              && sys.observe(meanAbs: 0, at: t0.addingTimeInterval(19)) == .ok)
+        check("system watchdog trips at its own fuse", sys.observe(meanAbs: 0, at: t0.addingTimeInterval(20)) == .lost)
+        check("system watchdog recovers", sys.observe(meanAbs: 0.01, at: t0.addingTimeInterval(30)) == .recovered)
+        // Recovery escalates only once the outage has outlasted every healthy
+        // silence, and only when the other mechanism is actually permitted.
+        typealias Step = AudioCaptureManager.SystemRecoveryStep
+        check("recovery starts by rebuilding the tap",
+              AudioCaptureManager.systemRecoveryStep(outage: 20, screenGranted: true) == .rebuildTap)
+        check("recovery switches to ScreenCaptureKit after the notify threshold",
+              AudioCaptureManager.systemRecoveryStep(outage: 90, screenGranted: true) == .screenCaptureKit)
+        check("recovery never picks a backend it lacks permission for",
+              AudioCaptureManager.systemRecoveryStep(outage: 600, screenGranted: false) == .rebuildTap)
     }
 
     // Local model folder matching (the hub-resolution bypass in loadModel),
