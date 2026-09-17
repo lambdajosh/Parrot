@@ -276,7 +276,8 @@ enum HelpShots {
         }
 
         shot("settings-general.png", size: .init(width: 780, height: 540), settings(.general))
-        shot("settings-recording.png", size: .init(width: 780, height: 540), settings(.recording))
+        shot("settings-recording.png", size: .init(width: 780, height: 620), settings(.recording))
+        shot("settings-meetings.png", size: .init(width: 780, height: 540), settings(.meetings))
         shot("settings-transcription.png", size: .init(width: 780, height: 620), settings(.transcription))
         shot("settings-copilot.png", size: .init(width: 780, height: 700), settings(.copilot))
         shot("settings-knowledge.png", size: .init(width: 780, height: 540), settings(.knowledge))

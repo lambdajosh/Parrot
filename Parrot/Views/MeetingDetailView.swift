@@ -75,21 +75,9 @@ struct MeetingDetailView: View {
                     .padding(.bottom, 4)
             }
 
-            // Tabs — each gets the full pane with a single scroll, instead of the
-            // old stack of fixed-height mini-scrollers.
-            Picker("View", selection: $tab) {
-                ForEach(ReportTab.allCases) { t in
-                    Label(t.rawValue, systemImage: t.icon).tag(t)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 380)
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-
-            Divider()
-
+            // Each tab gets the full pane with a single scroll; the picker
+            // itself lives in the toolbar (see below), where a Mac app keeps
+            // its view switcher.
             Group {
                 switch tab {
                 case .report: reportTab
@@ -111,6 +99,16 @@ struct MeetingDetailView: View {
             stopPlayback()
         }
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("View", selection: $tab) {
+                    ForEach(ReportTab.allCases) { t in
+                        Text(t.rawValue).tag(t)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 320)
+            }
             ToolbarItemGroup {
                 Menu {
                     Button("Export as TXT") { MeetingActions.exportTXT(meeting) }
@@ -211,19 +209,24 @@ struct MeetingDetailView: View {
                 aiCostRow(usage)
             }
 
-            // Name the other party so the transcript/report read naturally.
-            HStack(spacing: 6) {
-                Image(systemName: "person.crop.circle")
-                    .foregroundStyle(Theme.Colors.ink2)
-                TextField("Name the other speaker (e.g. Sam)", text: $themNameText) {
-                    meeting.themName = themNameText.trimmingCharacters(in: .whitespaces).nilIfEmpty
+            // One counterpart and no per-voice names yet: a single field is the
+            // quickest way to make the transcript read naturally. With several
+            // voices the naming card and chips take over, so the field goes.
+            if meeting.speakerNames.isEmpty, meeting.otherSpeakerLabels.count <= 1 {
+                HStack(spacing: 6) {
+                    Image(systemName: "person.crop.circle")
+                        .foregroundStyle(Theme.Colors.ink2)
+                    TextField("Name the other speaker (e.g. Sam)", text: $themNameText) {
+                        meeting.themName = themNameText.trimmingCharacters(in: .whitespaces).nilIfEmpty
+                    }
+                    .textFieldStyle(.plain)
+                    .frame(maxWidth: 240)
                 }
-                .textFieldStyle(.plain)
-                .frame(maxWidth: 240)
+                .font(Theme.Typography.caption)
             }
-            .font(Theme.Typography.caption)
         }
-        .padding(Theme.Metrics.pad)
+        .padding(.horizontal, Theme.Metrics.pad)
+        .padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -579,8 +582,8 @@ struct MeetingDetailView: View {
     private var transcriptList: some View {
         let ordered = meeting.sortedSegments
         return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 4) {
-                ForEach(ordered) { segment in
+            LazyVStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(ordered.enumerated()), id: \.element.id) { index, segment in
                     TranscriptSegmentRow(
                         segment: segment,
                         isActive: segment.id == activeSegmentID,
@@ -592,7 +595,11 @@ struct MeetingDetailView: View {
                         // we look at it — offer the cut once it has settled.
                         onTruncate: meeting.status == .done
                             ? { truncateAnchor = segment } : nil,
-                        isLastLine: segment.id == ordered.last?.id
+                        isLastLine: segment.id == ordered.last?.id,
+                        // A run of lines from one voice reads as a turn: the
+                        // name once, then the words.
+                        isFirstOfGroup: index == 0
+                            || ordered[index - 1].speakerLabel != segment.speakerLabel
                     )
                     .onTapGesture {
                         seekTo(segment.startTime)
@@ -604,6 +611,8 @@ struct MeetingDetailView: View {
                 }
             }
             .padding(Theme.Metrics.pad)
+            .frame(maxWidth: Theme.Metrics.readingWidth + 2 * Theme.Metrics.pad, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .confirmationDialog(
             "Delete the rest of this transcript?",
@@ -974,6 +983,9 @@ struct TranscriptSegmentRow: View {
     var onTruncate: (() -> Void)? = nil
     /// Bottom of the transcript: nothing below it to cut.
     var isLastLine: Bool = false
+    /// First line of a same-speaker run: shows the name and opens the turn
+    /// with a little air. Later lines of the run keep the column, not the name.
+    var isFirstOfGroup: Bool = true
     @State private var naming = false
 
     /// Muted adaptive palette for the other side of the call — "Me" is always
@@ -1009,7 +1021,9 @@ struct TranscriptSegmentRow: View {
 
             // Speaker chip — click to hear this voice and name it. The popover
             // anchors to this chip, right where the user clicked.
-            if let speaker = displayLabel {
+            if !isFirstOfGroup {
+                Color.clear.frame(width: 70, height: 1)
+            } else if let speaker = displayLabel {
                 if let meeting, let playClip, !isMe {
                     Button { naming = true } label: {
                         Text(speaker)
@@ -1041,7 +1055,8 @@ struct TranscriptSegmentRow: View {
                 .font(Theme.Typography.body)
                 .textSelection(.enabled)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 3)
+        .padding(.top, isFirstOfGroup ? 8 : 0)
         .padding(.horizontal, 8)
         .background(
             isActive ? Theme.Colors.accent.opacity(0.12) : Color.clear,

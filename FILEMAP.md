@@ -9,7 +9,7 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 |---|---|---|
 | `Parrot/ParrotApp.swift` | 181 | `@main`; parses CLI harness flags before the SwiftUI `App` starts |
 | `Parrot/ProfileTest.swift` | 1189 | `--profile-test`: headless logic harness, ~60 assertions |
-| `Parrot/SnapshotTool.swift` | 916 | Offscreen PNG renderers + transcribe/analyze harnesses |
+| `Parrot/SnapshotTool.swift` | 917 | Offscreen PNG renderers + transcribe/analyze harnesses |
 
 ## Models (SwiftData `@Model` + Codable values)
 
@@ -38,7 +38,7 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 | `Services/AudioSplitter.swift` | 85 | Cuts one PCM recording into two .caf halves at a time; sibling part naming |
 | `Services/CalendarService.swift` | 110 | EventKit reader (opt-in): events around now, permission flow, `ScheduledMeeting` mapping |
 | `Services/MeetingScheduler.swift` | 210 | Hands-free planner: reminders, auto start/switch/stop from the calendar; pure `plan` |
-| `Services/Notifier.swift` | 83 | macOS user notifications + Start Recording action; no-op without a bundle |
+| `Services/Notifier.swift` | 85 | macOS user notifications + Start Recording action; no-op without a bundle |
 | `Services/DiarizationEngine.swift` | 105 | FluidAudio offline pyannote diarization (CoreML): labels + per-speaker embeddings |
 | `Services/AnalysisProvider.swift` | 605 | `AnalysisProvider` protocol, request/result types, prompt building, **Keychain helpers** (~L575) |
 | `Services/OpenAICompatibleProvider.swift` | 528 | OpenAI-shaped LLM client (incl. Ollama); provider switching |
@@ -59,13 +59,13 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 | `Views/ContentView.swift` | 193 | Root split view + empty state + corner bug button |
 | `Views/SidebarView.swift` | 199 | Source list: Today + meetings by day, two-line rows, sidebar search, pinned Settings |
 | `Views/DashboardView.swift` | 328 | Today pane: now/next calendar call + Record, copilot brief, today's recordings |
-| `Views/LiveRecordingView.swift` | 573 | In-call screen: chat bubbles, mic level, side tabs |
+| `Views/LiveRecordingView.swift` | 558 | In-call screen: chat bubbles, mic level, side tabs |
 | `Views/CopilotPanelView.swift` | 729 | Live insight cards, pinned blockers, suggested replies |
-| `Views/MeetingDetailView.swift` | 1161 | Post-call tabs: transcript, insights, report; speaker naming popover + confirm card |
+| `Views/MeetingDetailView.swift` | 1176 | Post-call tabs: transcript, insights, report; speaker naming popover + confirm card |
 | `Views/BugReportSheet.swift` | 150 | Bug/idea report form + the corner ladybug button |
 | `Views/ReportContentView.swift` | 267 | Report section cards, talk-ratio bar, prose blocks |
 | `Views/SentimentStripView.swift` | 60 | Sentiment gauge strip |
-| `Views/SettingsView.swift` | 938 | All settings sections, provider keys, KB docs |
+| `Views/SettingsView.swift` | 1013 | All settings sections, provider keys, KB docs |
 | `Views/ProfilesSettingsView.swift` | 689 | Call-profile editor: kinds, gauges, icon picker |
 | `Views/OnboardingView.swift` | 340 | Permission walkthrough + model choice |
 | `Views/OllamaModelStatusView.swift` | 136 | Local model presence/pull status |

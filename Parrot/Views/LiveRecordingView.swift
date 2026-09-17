@@ -28,15 +28,9 @@ struct LiveRecordingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Top bar
+            // One status strip: what is being recorded, for how long, and the
+            // live level; the device details sit right under it.
             recordingHeader
-
-            Divider()
-
-            // Audio waveform
-            AudioWaveformView(level: recordingManager.audioCaptureManager.audioLevel)
-                .frame(height: 40)
-                .padding(.horizontal, Theme.Metrics.pad)
 
             deviceBar
 
@@ -65,60 +59,51 @@ struct LiveRecordingView: View {
 
     // MARK: - Recording Header
 
+    /// Stop lives in the window toolbar (ContentView), the one place for it.
+    /// This strip says what is being recorded and shows the call breathing.
     private var recordingHeader: some View {
-        HStack {
-            // Recording indicator
+        HStack(spacing: 16) {
             HStack(spacing: 8) {
                 Circle()
                     .fill(Theme.Colors.stop)
-                    .frame(width: 10, height: 10)
-
-                Text("Recording")
-                    .font(.appHeadline)
+                    .frame(width: 8, height: 8)
+                Text(recordingManager.isStopping ? "Finalizing" : "Recording")
+                    .font(Theme.Typography.sans(13, .semibold))
                     .foregroundStyle(Theme.Colors.stop)
+                Text(recordingManager.formattedElapsedTime)
+                    .font(Theme.Typography.sans(13, .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.Colors.ink)
+            }
+
+            if let meeting = recordingManager.currentMeeting, meeting.hasCustomTitle {
+                Text(meeting.title)
+                    .font(Theme.Typography.sans(13, .medium))
+                    .foregroundStyle(Theme.Colors.ink2)
+                    .lineLimit(1)
             }
 
             Spacer()
 
-            // Timer
-            Text(recordingManager.formattedElapsedTime)
-                .font(Theme.Typography.mono(15, .medium))
-
-            Spacer()
-
-            // Copilot panel toggle
-            if copilotEnabled {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showCopilot.toggle()
-                    }
-                } label: {
-                    Image(systemName: "sparkles")
-                        .font(.appHeadline)
-                        .foregroundStyle(showCopilot ? Theme.Colors.accent : Theme.Colors.ink2)
-                }
-                .buttonStyle(.plain)
-                .help(showCopilot ? "Hide Copilot" : "Show Copilot")
-                .padding(.trailing, 12)
-            }
-
-            // Stop button. Stop drains the transcription backlog (can take a few
-            // seconds on a long call), so show that instead of looking hung.
-            Button {
-                Task {
-                    await recordingManager.stopRecording()
-                }
-            } label: {
-                Label(recordingManager.isStopping ? "Finalizing…" : "Stop",
-                      systemImage: "stop.circle.fill")
-                    .font(.appHeadline)
-                    .foregroundStyle(recordingManager.isStopping ? Theme.Colors.ink2 : Theme.Colors.stop)
-            }
-            .buttonStyle(.plain)
-            .disabled(recordingManager.isStopping)
+            AudioWaveformView(level: recordingManager.audioCaptureManager.audioLevel)
+                .frame(width: 180, height: 22)
+                .help("The other side's audio level")
         }
         .padding(.horizontal, Theme.Metrics.pad)
-        .padding(.vertical, 12)
+        .padding(.vertical, 10)
+        .toolbar {
+            if copilotEnabled {
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { showCopilot.toggle() }
+                    } label: {
+                        Label(showCopilot ? "Hide Copilot" : "Show Copilot", systemImage: "sparkles")
+                            .foregroundStyle(showCopilot ? Theme.Colors.accent : Theme.Colors.ink2)
+                    }
+                    .help(showCopilot ? "Hide Copilot" : "Show Copilot")
+                }
+            }
+        }
     }
 
     // MARK: - Device Bar
@@ -560,7 +545,7 @@ struct AudioWaveformView: View {
             ForEach(0..<levels.count, id: \.self) { index in
                 RoundedRectangle(cornerRadius: 1)
                     .fill(Theme.Colors.accent.opacity(0.6))
-                    .frame(width: 3, height: max(2, CGFloat(levels[index]) * 60))
+                    .frame(width: 2, height: max(2, min(CGFloat(levels[index]) * 60, 22)))
             }
         }
         .frame(maxWidth: .infinity)

@@ -22,7 +22,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var onStartRecording: (() -> Void)?
 
     private var authorizationRequested = false
-    private var available: Bool { Bundle.main.bundleIdentifier != nil }
+    /// False in the CLI harnesses (no bundle), where UNUserNotificationCenter aborts.
+    var isAvailable: Bool { Bundle.main.bundleIdentifier != nil }
+    private var available: Bool { isAvailable }
 
     /// Registers the action category and takes the delegate role, so taps on
     /// banners come back to us and banners still show while Parrot is

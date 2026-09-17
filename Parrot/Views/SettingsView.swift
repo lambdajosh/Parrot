@@ -2,12 +2,15 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 import ServiceManagement
+import EventKit
+import AVFoundation
+import UserNotifications
 
 /// Settings pages, System Settings-style: topics on the left, ONE topic per
 /// page on the right. Content rules: controls at body size, hints one line at
 /// secondary size — long explanations live in the control's own label instead.
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, recording, meetings, transcription, copilot, apiKeys, knowledge, profiles
+    case general, meetings, recording, transcription, copilot, knowledge, profiles, apiKeys
 
     var id: String { rawValue }
 
@@ -58,6 +61,8 @@ struct SettingsView: View {
     /// Mirrors SMAppService so the toggle survives a relaunch without a
     /// second copy of the truth, like the Sparkle toggle below.
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// nil until the async notification-settings read lands.
+    @State private var notificationsGranted: Bool?
     @AppStorage("appearance") private var appearance = Appearance.system
     @AppStorage("copilotEnabled") private var copilotEnabled = false
     @AppStorage("copilotProvider") private var copilotProvider = CopilotProviderKind.claude.rawValue
@@ -236,7 +241,7 @@ struct SettingsView: View {
                 }
 
                 Toggle("Save a transcript here after each call", isOn: $autoSaveTranscripts)
-                Hint("Writes a TXT once transcription and speaker detection have finished. Right-click a meeting → Export to save one any time.")
+                Hint("Writes a TXT once transcription and speaker detection finish. Right-click a meeting → Export for a one-off.")
             }
 
             Section("About") {
@@ -296,8 +301,41 @@ struct SettingsView: View {
             }
 
             Section("Input") {
-                Hint("System audio is captured via ScreenCaptureKit; the microphone uses your default input device.")
+                Hint("The other side comes from a system audio tap (macOS 15+) or ScreenCaptureKit; your side from the default microphone.")
             }
+
+            Section("Permissions") {
+                PermissionStatusRow(
+                    title: "System Audio Recording",
+                    granted: PermissionFlow.systemAudioLooksGranted(),
+                    detail: PermissionFlow.systemAudioLooksGranted() ? "Granted" : "Confirmed by the first real recording",
+                    pane: "Privacy_ScreenCapture")
+                PermissionStatusRow(
+                    title: "Microphone",
+                    granted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+                    detail: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized ? "Granted" : "Not granted",
+                    pane: "Privacy_Microphone")
+                PermissionStatusRow(
+                    title: "Calendars",
+                    granted: EKEventStore.authorizationStatus(for: .event) == .fullAccess,
+                    detail: EKEventStore.authorizationStatus(for: .event) == .fullAccess ? "Granted"
+                        : (calendarContextEnabled ? "Not granted" : "Off (Meetings page)"),
+                    pane: "Privacy_Calendars")
+                PermissionStatusRow(
+                    title: "Notifications",
+                    granted: notificationsGranted == true,
+                    detail: notificationsGranted.map { $0 ? "Granted" : "Not granted" } ?? "Asked on the first recording",
+                    pane: nil)
+                Hint("Each row opens the matching System Settings pane. macOS forgets grants when the app is re-signed.")
+            }
+        }
+        .task {
+            // The notification center aborts in an unbundled binary (the
+            // snapshot harnesses); Notifier knows whether it is safe to ask.
+            guard Notifier.shared.isAvailable else { return }
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            notificationsGranted = settings.authorizationStatus == .authorized
+                || settings.authorizationStatus == .provisional
         }
     }
 
@@ -311,7 +349,7 @@ struct SettingsView: View {
                         calendar.isEnabled = on
                         if on { Task { _ = await calendar.requestAccess() } }
                     }
-                Hint("Names each recording after the calendar event, notes who was invited, and gives the copilot the agenda as its brief. Reads the Calendar app on this Mac; your Google Calendar shows up as long as it is added there.")
+                Hint("Names each recording after its event, keeps the invitees, and briefs the copilot with the agenda. Reads the Calendar app on this Mac.")
                 if calendarContextEnabled {
                     LabeledContent("Access") {
                         if calendar.hasAccess {
@@ -329,7 +367,7 @@ struct SettingsView: View {
                         }
                     }
                     if copilotEnabled, copilotProvider != CopilotProviderKind.ollama.rawValue {
-                        Hint("Attendee names and the agenda become part of the brief, so with a cloud copilot they are sent to that provider along with the transcript.")
+                        Hint("Invitee names and the agenda join the brief, so a cloud copilot receives them with the transcript.")
                     }
                 }
             }
@@ -340,7 +378,7 @@ struct SettingsView: View {
                 Hint("A notification \(Int(MeetingScheduler.reminderLead / 60)) minutes before, with a Start Recording button.")
                 Toggle("Record scheduled video calls automatically", isOn: $autoRecordMeetings)
                     .disabled(!calendarContextEnabled)
-                Hint("Starts a minute before each call with a Meet, Zoom, or Teams link, and stops once the call has ended and gone quiet. Back-to-back calls become separate meetings. Stopping by hand keeps that meeting off until the next one.")
+                Hint("Starts a minute before each Meet, Zoom, or Teams call and stops once it has ended and gone quiet. Stopping by hand leaves that meeting alone.")
                 Toggle("Open Parrot at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, on in
                         do {
@@ -350,7 +388,7 @@ struct SettingsView: View {
                         }
                         launchAtLogin = SMAppService.mainApp.status == .enabled
                     }
-                Hint("Hands-free recording only works while Parrot is running. The menu bar icon stays available with the window closed.")
+                Hint("Hands-free only works while Parrot runs; the menu bar icon stays with the window closed.")
             }
         }
     }
@@ -386,7 +424,7 @@ struct SettingsView: View {
                 Divider()
 
                 Toggle("Show words as they're spoken", isOn: $livePreview)
-                Hint("Gray preview text while someone is mid-sentence, replaced by the final line. On-device engine only; turn off if calls make your Mac run hot. Applies to the next recording.")
+                Hint("Gray preview text mid-sentence, replaced by the final line. On-device only; turn off if calls make your Mac run hot.")
             }
 
             Section("On-Device Model") {
@@ -547,7 +585,7 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                Hint("Only recent talk is sent — insight cards always go along, so Copilot still remembers the whole call. Smaller is cheaper and faster, especially on free or local models.")
+                Hint("Only recent talk is sent; insight cards always go along. Smaller is cheaper and faster, especially on local models.")
             }
 
             Section("Model") {
@@ -574,7 +612,7 @@ struct SettingsView: View {
                    reportsKind != (CopilotProviderKind(rawValue: copilotProvider) ?? .claude) {
                     providerConfig(for: reportsKind)
                 }
-                Hint("Reports generate after the call, so a local model keeps them free and private without slowing live cards. If the reports backend isn't set up, reports fall back to the live one.")
+                Hint("Reports run after the call, so a local model keeps them free and private. Falls back to the live backend if unset.")
             }
         }
     }
@@ -609,12 +647,12 @@ struct SettingsView: View {
                                 .textFieldStyle(.roundedBorder)
                                 .frame(maxWidth: 220)
                         }
-                        Hint("Any model from ollama.com/library — prefer small instruct models; \"thinking\" models (qwen3, deepseek-r1) are too slow for live cards.")
+                        Hint("Any model from ollama.com/library. Prefer small instruct models; thinking models are too slow for live cards.")
                     }
 
                     OllamaModelStatusView(model: copilotOllamaModel)
 
-                    Hint("Runs entirely on this Mac — free, private, no key, works offline. Expect live cards to arrive slower and read rougher than Claude's — reports are unaffected.")
+                    Hint("Runs on this Mac: free, private, offline. Live cards arrive slower and read rougher than Claude's; reports are unaffected.")
                 case .custom:
                     LabeledContent("Server URL") {
                         TextField("", text: $copilotCustomBaseURL, prompt: Text("https://api.openai.com/v1"))
@@ -813,6 +851,43 @@ private struct SettingsNavRow: View {
 
 /// The ONE way explanatory text appears on a settings page: a single readable
 /// line at secondary size. Anything longer belongs in the control's own label.
+/// One permission: a colored status dot, the state in words, and a button to
+/// the System Settings pane that changes it. Read-only by design; every grant
+/// is made in System Settings, never by a prompt from a settings screen.
+struct PermissionStatusRow: View {
+    let title: String
+    let granted: Bool
+    let detail: String
+    /// Privacy pane id for PermissionFlow.openSettings; nil opens Notifications.
+    let pane: String?
+
+    var body: some View {
+        LabeledContent {
+            HStack(spacing: 8) {
+                Text(detail)
+                    .font(Theme.Typography.secondary)
+                    .foregroundStyle(granted ? Theme.Colors.good : Theme.Colors.ink2)
+                Button("Open…") {
+                    if let pane {
+                        PermissionFlow.openSettings(pane: pane)
+                    } else if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(Bundle.main.bundleIdentifier ?? "")") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .controlSize(.small)
+            }
+        } label: {
+            Label {
+                Text(title)
+            } icon: {
+                Circle()
+                    .fill(granted ? Theme.Colors.good : Theme.Colors.ink3)
+                    .frame(width: 8, height: 8)
+            }
+        }
+    }
+}
+
 struct Hint: View {
     let text: String
     init(_ text: String) { self.text = text }
