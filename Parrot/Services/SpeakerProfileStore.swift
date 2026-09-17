@@ -44,13 +44,21 @@ enum SpeakerProfileStore {
         (try? context.fetch(FetchDescriptor<SpeakerProfile>(sortBy: [SortDescriptor(\.name)]))) ?? []
     }
 
-    /// Best remembered voice at/above the threshold, or nil.
-    static func match(_ embedding: [Float], in context: ModelContext) -> (name: String, similarity: Float)? {
-        let best = profiles(in: context)
+    /// Best remembered voice at/above the threshold, or nil. When several
+    /// clear the floor, one who is on the meeting's invite list wins over one
+    /// who is not: the calendar breaks the tie, the voiceprint sets the bar.
+    static func match(_ embedding: [Float], in context: ModelContext,
+                      preferring invitees: Set<String> = []) -> (name: String, similarity: Float)? {
+        match(embedding, profiles: profiles(in: context).map { ($0.name, $0.embedding) }, preferring: invitees)
+    }
+
+    static func match(_ embedding: [Float], profiles: [(name: String, embedding: [Float])],
+                      preferring invitees: Set<String> = []) -> (name: String, similarity: Float)? {
+        let cleared = profiles
             .map { (name: $0.name, similarity: cosine(embedding, $0.embedding)) }
-            .max { $0.similarity < $1.similarity }
-        guard let best, best.similarity >= suggestThreshold else { return nil }
-        return best
+            .filter { $0.similarity >= suggestThreshold }
+        let pool = cleared.filter { invitees.contains($0.name) }
+        return (pool.isEmpty ? cleared : pool).max { $0.similarity < $1.similarity }
     }
 
     /// The voices to name without asking: each unnamed label's best remembered
@@ -60,7 +68,8 @@ enum SpeakerProfileStore {
     static func autoAssignments(
         for embeddings: [String: [Float]],
         alreadyNamed: [String: String],
-        profiles: [(name: String, embedding: [Float])]
+        profiles: [(name: String, embedding: [Float])],
+        invitees: Set<String> = []
     ) -> [String: String] {
         let takenNames = Set(alreadyNamed.values)
         var candidates: [(label: String, name: String, similarity: Float)] = []
@@ -74,7 +83,14 @@ enum SpeakerProfileStore {
         }
         var result: [String: String] = [:]
         var usedNames = takenNames
-        for candidate in candidates.sorted(by: { $0.similarity > $1.similarity })
+        // Invited people are considered first, then by closeness; the 0.85
+        // floor still applies to everyone.
+        let ranked = candidates.sorted { a, b in
+            let ai = invitees.contains(a.name), bi = invitees.contains(b.name)
+            if ai != bi { return ai }
+            return a.similarity > b.similarity
+        }
+        for candidate in ranked
         where result[candidate.label] == nil && !usedNames.contains(candidate.name) {
             result[candidate.label] = candidate.name
             usedNames.insert(candidate.name)
@@ -83,9 +99,9 @@ enum SpeakerProfileStore {
     }
 
     static func autoAssignments(for embeddings: [String: [Float]], alreadyNamed: [String: String],
-                                in context: ModelContext) -> [String: String] {
+                                invitees: Set<String> = [], in context: ModelContext) -> [String: String] {
         autoAssignments(for: embeddings, alreadyNamed: alreadyNamed,
-                        profiles: profiles(in: context).map { ($0.name, $0.embedding) })
+                        profiles: profiles(in: context).map { ($0.name, $0.embedding) }, invitees: invitees)
     }
 
     /// Create or reinforce the profile named `name` with one more voice sample.

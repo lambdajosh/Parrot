@@ -723,6 +723,35 @@ enum ProfileTest {
         m.setSpeakerName("Grace", for: "Speaker 2", automatic: true)
         m.setSpeakerName(nil, for: "Speaker 2")
         check("undo clears both name and mark", m.speakerNames["Speaker 2"] == nil && m.autoNamedLabels.isEmpty)
+
+        // The calendar breaks ties and fills the last gap, but never lowers the bar.
+        // Ada scores ~0.995 against the query, Ida ~0.95: both clear 0.65, Ada
+        // is plainly closer, so only the invite can make Ida win.
+        let alike = [(name: "Ada", embedding: [1, 0, 0] as [Float]), (name: "Ida", embedding: [0.9, 0.4, 0] as [Float])]
+        check("suggestion prefers the invited voice when both clear the floor",
+              SpeakerProfileStore.match([0.99, 0.1, 0], profiles: alike, preferring: ["Ida"])?.name == "Ida"
+                && SpeakerProfileStore.match([0.99, 0.1, 0], profiles: alike)?.name == "Ada")
+        check("an invitee below the floor is not suggested",
+              SpeakerProfileStore.match([0, 0, 1], profiles: alike, preferring: ["Ada", "Ida"]) == nil)
+        let autoPref = SpeakerProfileStore.autoAssignments(
+            for: ["Speaker 1": [0.99, 0.1, 0]], alreadyNamed: [:], profiles: alike, invitees: ["Ida"])
+        check("auto-naming prefers the invited voice", autoPref["Speaker 1"] == "Ida")
+        let calendar = Meeting(title: "c")
+        ctx.insert(calendar)
+        calendar.attendeesData = try? JSONEncoder().encode([
+            ScheduledMeeting.Attendee(name: "Josh", email: nil, isMe: true),
+            ScheduledMeeting.Attendee(name: "Ada", email: nil, isMe: false),
+            ScheduledMeeting.Attendee(name: "Grace", email: nil, isMe: false)])
+        for (t, label) in [(0.0, "Me"), (5.0, "Speaker 1"), (10.0, "Speaker 2")] {
+            let seg = TranscriptSegment(startTime: t, endTime: t + 1, text: "x", speakerLabel: label)
+            ctx.insert(seg); seg.meeting = calendar
+        }
+        check("two voices, two invitees: no guess", calendar.soleInviteeGuess == nil)
+        calendar.setSpeakerName("Ada", for: "Speaker 1")
+        check("one voice left, one invitee left: guess it", calendar.soleInviteeGuess == "Grace")
+        check("unassigned invitees drop the named one", calendar.unassignedInvitees == ["Grace"])
+        calendar.setSpeakerName("Grace", for: "Speaker 2")
+        check("nothing left to guess", calendar.soleInviteeGuess == nil && calendar.unassignedInvitees.isEmpty)
     }
 
     // Trimming the tail of text Whisper invents when a recording is left

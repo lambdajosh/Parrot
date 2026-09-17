@@ -777,7 +777,8 @@ final class RecordingManager {
                 if UserDefaults.standard.bool(forKey: "rememberVoices"),
                    UserDefaults.standard.object(forKey: SpeakerProfileStore.autoNameKey) as? Bool ?? true {
                     let names = SpeakerProfileStore.autoAssignments(
-                        for: output.embeddings, alreadyNamed: meeting.speakerNames, in: modelContext)
+                        for: output.embeddings, alreadyNamed: meeting.speakerNames,
+                        invitees: Set(meeting.attendeeNames), in: modelContext)
                     for (label, name) in names { meeting.setSpeakerName(name, for: label, automatic: true) }
                     if !names.isEmpty {
                         Self.oslog.log("recognized \(names.count, privacy: .public) remembered voice(s)")

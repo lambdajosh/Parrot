@@ -378,6 +378,22 @@ final class Meeting {
         autoNamedLabels = auto
     }
 
+    /// Invitees from the calendar not yet attached to a voice.
+    var unassignedInvitees: [String] {
+        let taken = Set(speakerNames.values)
+        return attendeeNames.filter { !taken.contains($0) }
+    }
+
+    /// The one invitee left for the one voice left. As close to certain as
+    /// the calendar gets without hearing anyone, so it is offered as a
+    /// one-click guess; with two or more of either there is no way to tell
+    /// who is who, so nothing is guessed.
+    var soleInviteeGuess: String? {
+        let unnamed = otherSpeakerLabels.filter { speakerNames[$0] == nil }
+        let left = unassignedInvitees
+        return unnamed.count == 1 && left.count == 1 ? left[0] : nil
+    }
+
     /// Distinct non-Me speaker labels, "Speaker 1" first.
     var otherSpeakerLabels: [String] {
         Set(segments.compactMap(\.speakerLabel)).subtracting(["Me"])

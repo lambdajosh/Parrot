@@ -755,7 +755,8 @@ struct MeetingDetailView: View {
                         .frame(width: 70, alignment: .leading)
                     if rememberVoices,
                        let embedding = meeting.speakerEmbeddings[label],
-                       let match = SpeakerProfileStore.match(embedding, in: modelContext) {
+                       let match = SpeakerProfileStore.match(embedding, in: modelContext,
+                                                             preferring: Set(meeting.attendeeNames)) {
                         Button {
                             confirmVoice(label: label, name: match.name)
                         } label: {
@@ -765,6 +766,28 @@ struct MeetingDetailView: View {
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                         .help("One click names this voice \(match.name) and strengthens their remembered voiceprint")
+                    } else if let guess = meeting.soleInviteeGuess {
+                        // One voice left, one invitee left: the calendar's
+                        // best guess, offered rather than applied, since an
+                        // invitee who never joined is common.
+                        Button {
+                            confirmVoice(label: label, name: guess)
+                        } label: {
+                            Label("Probably \(guess)? Confirm", systemImage: "calendar.badge.checkmark")
+                                .font(Theme.Typography.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("The only invitee not yet matched to a voice")
+                    } else {
+                        // The invite list, minus people already matched: one
+                        // click here instead of a trip into Name….
+                        ForEach(Array(meeting.unassignedInvitees.prefix(4)), id: \.self) { name in
+                            Button(name) { confirmVoice(label: label, name: name) }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .font(Theme.Typography.caption)
+                        }
                     }
                     if let clip = meeting.longestSegments(for: label, count: 1).first {
                         Button {
@@ -917,7 +940,7 @@ struct SpeakerNamePopover: View {
         guard rememberVoices, meeting.speakerNames[label] == nil,
               let embedding = meeting.speakerEmbeddings[label], !embedding.isEmpty
         else { return nil }
-        return SpeakerProfileStore.match(embedding, in: modelContext)
+        return SpeakerProfileStore.match(embedding, in: modelContext, preferring: Set(meeting.attendeeNames))
     }
 
     private func assign(_ finalName: String) {
