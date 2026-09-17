@@ -766,6 +766,24 @@ final class RecordingManager {
                 }
             }
             meeting.speakerEmbeddingsData = try? JSONEncoder().encode(output.embeddings)
+
+            // Recognize remembered voices. Automatic names are derived from
+            // this pass, so a re-run clears the previous ones first; names the
+            // user typed or confirmed are kept. Nothing here reinforces a
+            // profile: only a user's confirmation does, so one wrong automatic
+            // match cannot drift a voiceprint.
+            if let modelContext {
+                for label in meeting.autoNamedLabels { meeting.setSpeakerName(nil, for: label) }
+                if UserDefaults.standard.bool(forKey: "rememberVoices"),
+                   UserDefaults.standard.object(forKey: SpeakerProfileStore.autoNameKey) as? Bool ?? true {
+                    let names = SpeakerProfileStore.autoAssignments(
+                        for: output.embeddings, alreadyNamed: meeting.speakerNames, in: modelContext)
+                    for (label, name) in names { meeting.setSpeakerName(name, for: label, automatic: true) }
+                    if !names.isEmpty {
+                        Self.oslog.log("recognized \(names.count, privacy: .public) remembered voice(s)")
+                    }
+                }
+            }
             try? modelContext?.save()
         } catch {
             // Diarization is a refinement pass; the audio and transcript are

@@ -89,6 +89,7 @@ struct SettingsView: View {
     @State private var section: SettingsSection = .general
     @State private var diarizerDownloading = false
     @AppStorage("rememberVoices") private var rememberVoices = false
+    @AppStorage(SpeakerProfileStore.autoNameKey) private var autoNameVoices = true
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SpeakerProfile.name) private var voiceProfiles: [SpeakerProfile]
     @State private var showFileImporter = false
@@ -470,6 +471,8 @@ struct SettingsView: View {
                     .font(Theme.Typography.caption)
                     .foregroundStyle(Theme.Colors.ink2)
                 if rememberVoices {
+                    Toggle("Name voices automatically when confident", isOn: $autoNameVoices)
+                    Hint("A very close match is named without asking and marked so you can undo it; looser matches stay one-click suggestions.")
                     ForEach(voiceProfiles) { profile in
                         HStack {
                             Text(profile.name)

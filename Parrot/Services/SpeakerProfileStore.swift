@@ -3,9 +3,21 @@ import SwiftData
 
 /// Matching and upkeep for remembered voices. Stateless — every call takes
 /// the ModelContext — so views and harnesses use it without wiring.
-/// Suggestion-only by design: nothing here writes a speaker name; the user
-/// confirms in the naming popover (confirm-first rule in the design spec).
+/// Nothing here writes a speaker name: `match` feeds the one-click "sounds
+/// like" confirmation, and `autoAssignments` returns the names the caller
+/// may apply without asking, marked as automatic so they stay reversible.
 enum SpeakerProfileStore {
+    /// Settings key: apply `autoAssignments` after diarization. Defaults on;
+    /// only meaningful while "Remember voices" is on.
+    static let autoNameKey = "autoNameVoices"
+
+    /// Cosine floor for naming a voice without asking. Same measurements as
+    /// `suggestThreshold`: a clean same-voice match sat at 0.96 and every
+    /// different-voice pair at 0.50–0.53, so 0.85 keeps a 0.3 gap above every
+    /// false match seen while still catching a clean call. Degraded audio
+    /// (0.65–0.70) stays a suggestion the user clicks.
+    static let autoNameThreshold: Float = 0.85
+
     /// Cosine similarity floor for "sounds like X" suggestions. Measured on
     /// real recordings: same voice on a clean call 0.96; same voice through
     /// degraded audio (played back over speakers and re-captured) 0.65–0.70;
@@ -39,6 +51,41 @@ enum SpeakerProfileStore {
             .max { $0.similarity < $1.similarity }
         guard let best, best.similarity >= suggestThreshold else { return nil }
         return best
+    }
+
+    /// The voices to name without asking: each unnamed label's best remembered
+    /// voice at or above `autoNameThreshold`, each name used once per meeting
+    /// (highest similarity wins), and never a name already given to another
+    /// voice in this meeting by hand. Pure, so the harness can drive it.
+    static func autoAssignments(
+        for embeddings: [String: [Float]],
+        alreadyNamed: [String: String],
+        profiles: [(name: String, embedding: [Float])]
+    ) -> [String: String] {
+        let takenNames = Set(alreadyNamed.values)
+        var candidates: [(label: String, name: String, similarity: Float)] = []
+        for (label, embedding) in embeddings where label != "Me" && alreadyNamed[label] == nil {
+            for profile in profiles where !takenNames.contains(profile.name) {
+                let similarity = cosine(embedding, profile.embedding)
+                if similarity >= autoNameThreshold {
+                    candidates.append((label, profile.name, similarity))
+                }
+            }
+        }
+        var result: [String: String] = [:]
+        var usedNames = takenNames
+        for candidate in candidates.sorted(by: { $0.similarity > $1.similarity })
+        where result[candidate.label] == nil && !usedNames.contains(candidate.name) {
+            result[candidate.label] = candidate.name
+            usedNames.insert(candidate.name)
+        }
+        return result
+    }
+
+    static func autoAssignments(for embeddings: [String: [Float]], alreadyNamed: [String: String],
+                                in context: ModelContext) -> [String: String] {
+        autoAssignments(for: embeddings, alreadyNamed: alreadyNamed,
+                        profiles: profiles(in: context).map { ($0.name, $0.embedding) })
     }
 
     /// Create or reinforce the profile named `name` with one more voice sample.

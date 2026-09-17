@@ -659,9 +659,24 @@ struct MeetingDetailView: View {
         meeting.otherSpeakerLabels.filter { meeting.speakerNames[$0] == nil }
     }
 
+    /// Voices named by recognition and not yet confirmed: shown with an undo.
+    private var autoNamedSpeakerLabels: [String] {
+        meeting.otherSpeakerLabels.filter { meeting.autoNamedLabels.contains($0) }
+    }
+
     private var nameVoicesCardVisible: Bool {
-        meeting.status == .done && meeting.otherSpeakerLabels.count >= 2
-            && !unnamedSpeakerLabels.isEmpty && !meeting.speakerPromptDismissed
+        guard meeting.status == .done, !meeting.speakerPromptDismissed else { return false }
+        return !autoNamedSpeakerLabels.isEmpty
+            || (meeting.otherSpeakerLabels.count >= 2 && !unnamedSpeakerLabels.isEmpty)
+    }
+
+    /// One click on "sounds like X?" is the confirmation: name the voice and,
+    /// since the user vouched for it, reinforce the remembered voiceprint.
+    private func confirmVoice(label: String, name: String) {
+        meeting.setSpeakerName(name, for: label)
+        if rememberVoices, let embedding = meeting.speakerEmbeddings[label] {
+            SpeakerProfileStore.remember(name: name, embedding: embedding, in: modelContext)
+        }
     }
 
     private var detectSpeakersButton: some View {
@@ -681,7 +696,9 @@ struct MeetingDetailView: View {
             HStack(spacing: 8) {
                 Image(systemName: "person.wave.2.fill")
                     .foregroundStyle(Theme.Colors.accent)
-                Text("Heard \(meeting.otherSpeakerLabels.count) people besides you — listen and name them")
+                Text(unnamedSpeakerLabels.isEmpty
+                     ? "Recognized \(autoNamedSpeakerLabels.count == 1 ? "a voice" : "\(autoNamedSpeakerLabels.count) voices") from earlier calls"
+                     : "Heard \(meeting.otherSpeakerLabels.count) people besides you. Listen and name them")
                     .font(Theme.Typography.body)
                     .fontWeight(.semibold)
                 Spacer()
@@ -697,6 +714,36 @@ struct MeetingDetailView: View {
                 .buttonStyle(.plain)
                 .help("Keep the neutral labels")
             }
+            // Recognized without asking: shown as a fact with an undo, and a
+            // Confirm that turns it into a user-vouched name.
+            ForEach(autoNamedSpeakerLabels, id: \.self) { label in
+                let name = meeting.speakerNames[label] ?? label
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Theme.Colors.good)
+                    Text(name)
+                        .font(Theme.Typography.caption)
+                        .fontWeight(.medium)
+                        .frame(width: 70, alignment: .leading)
+                    Text("recognized from earlier calls")
+                        .font(Theme.Typography.caption)
+                        .foregroundStyle(Theme.Colors.ink2)
+                    if let clip = meeting.longestSegments(for: label, count: 1).first {
+                        Button {
+                            playClip(start: clip.startTime, end: min(clip.endTime, clip.startTime + 8))
+                        } label: {
+                            Label("Play", systemImage: "play.fill")
+                                .font(Theme.Typography.caption)
+                        }
+                    }
+                    Button("Confirm") { confirmVoice(label: label, name: name) }
+                        .font(Theme.Typography.caption)
+                    Button("Not \(name)") { meeting.setSpeakerName(nil, for: label) }
+                        .font(Theme.Typography.caption)
+                        .help("Clear the name; the voice goes back to the list below to be named")
+                    Spacer()
+                }
+            }
             ForEach(unnamedSpeakerLabels, id: \.self) { label in
                 HStack(spacing: 10) {
                     Circle()
@@ -709,9 +756,15 @@ struct MeetingDetailView: View {
                     if rememberVoices,
                        let embedding = meeting.speakerEmbeddings[label],
                        let match = SpeakerProfileStore.match(embedding, in: modelContext) {
-                        Text("sounds like \(match.name)?")
-                            .font(Theme.Typography.caption)
-                            .foregroundStyle(Theme.Colors.accent)
+                        Button {
+                            confirmVoice(label: label, name: match.name)
+                        } label: {
+                            Label("Sounds like \(match.name)? Confirm", systemImage: "person.crop.circle.badge.checkmark")
+                                .font(Theme.Typography.caption)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .help("One click names this voice \(match.name) and strengthens their remembered voiceprint")
                     }
                     if let clip = meeting.longestSegments(for: label, count: 1).first {
                         Button {
@@ -868,9 +921,7 @@ struct SpeakerNamePopover: View {
     }
 
     private func assign(_ finalName: String) {
-        var names = meeting.speakerNames
-        names[label] = finalName.nilIfEmpty
-        meeting.speakerNames = names
+        meeting.setSpeakerName(finalName.nilIfEmpty, for: label)
         if rememberVoices, let finalName = finalName.nilIfEmpty,
            let embedding = meeting.speakerEmbeddings[label] {
             SpeakerProfileStore.remember(name: finalName, embedding: embedding, in: modelContext)

@@ -688,6 +688,41 @@ enum ProfileTest {
         check("sample count grows", profile?.sampleCount == 2)
         SpeakerProfileStore.deleteAll(in: ctx)
         check("deleteAll empties", SpeakerProfileStore.profiles(in: ctx).isEmpty)
+
+        // Naming without asking: only very close matches, one name per voice
+        // and one voice per name, never a name the user already gave.
+        let ada: [Float] = [1, 0, 0], grace: [Float] = [0, 1, 0]
+        let people = [(name: "Ada", embedding: ada), (name: "Grace", embedding: grace)]
+        check("auto threshold sits above every false match measured and below a clean one",
+              SpeakerProfileStore.autoNameThreshold > 0.53 && SpeakerProfileStore.autoNameThreshold < 0.96
+                && SpeakerProfileStore.autoNameThreshold > SpeakerProfileStore.suggestThreshold)
+        let auto = SpeakerProfileStore.autoAssignments(
+            for: ["Speaker 1": [0.98, 0.1, 0], "Speaker 2": [0.1, 0.99, 0], "Speaker 3": [0.7, 0.7, 0], "Me": ada],
+            alreadyNamed: [:], profiles: people)
+        check("auto names the clear matches", auto["Speaker 1"] == "Ada" && auto["Speaker 2"] == "Grace")
+        check("auto leaves a degraded match to the user", auto["Speaker 3"] == nil)
+        check("auto never touches Me", auto["Me"] == nil)
+        let twoAlike = SpeakerProfileStore.autoAssignments(
+            for: ["Speaker 1": [0.95, 0.2, 0], "Speaker 2": [0.99, 0.05, 0]], alreadyNamed: [:], profiles: people)
+        check("auto gives a name to one voice only, the closest",
+              twoAlike == ["Speaker 2": "Ada"])
+        let taken = SpeakerProfileStore.autoAssignments(
+            for: ["Speaker 2": ada], alreadyNamed: ["Speaker 1": "Ada"], profiles: people)
+        check("auto skips a name the user already assigned", taken.isEmpty)
+        let named = SpeakerProfileStore.autoAssignments(
+            for: ["Speaker 1": ada], alreadyNamed: ["Speaker 1": "Someone"], profiles: people)
+        check("auto leaves a voice the user already named", named.isEmpty)
+
+        // The meeting keeps automatic names apart from chosen ones.
+        let m = Meeting(title: "v")
+        ctx.insert(m)
+        m.setSpeakerName("Ada", for: "Speaker 1", automatic: true)
+        check("automatic name is marked", m.speakerNames["Speaker 1"] == "Ada" && m.autoNamedLabels == ["Speaker 1"])
+        m.setSpeakerName("Ada", for: "Speaker 1")
+        check("confirming clears the mark", m.speakerNames["Speaker 1"] == "Ada" && m.autoNamedLabels.isEmpty)
+        m.setSpeakerName("Grace", for: "Speaker 2", automatic: true)
+        m.setSpeakerName(nil, for: "Speaker 2")
+        check("undo clears both name and mark", m.speakerNames["Speaker 2"] == nil && m.autoNamedLabels.isEmpty)
     }
 
     // Trimming the tail of text Whisper invents when a recording is left

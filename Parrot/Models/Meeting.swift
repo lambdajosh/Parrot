@@ -52,6 +52,10 @@ final class Meeting {
     var speakerNamesData: Data? = nil
     /// One-time "name the voices" card dismissed. Defaulted → old rows migrate.
     var speakerPromptDismissed: Bool = false
+    /// Labels whose name was applied by voice recognition rather than the
+    /// user (JSON [String]). Shown as "recognized" with an undo until
+    /// confirmed. Defaulted → old rows migrate.
+    var autoNamedLabelsData: Data? = nil
 
     /// When the user last trimmed the tail off this transcript, nil if never.
     /// Drives the footer note — a transcript that stops mid-call should say why
@@ -352,6 +356,26 @@ final class Meeting {
             return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
         }
         set { speakerNamesData = try? JSONEncoder().encode(newValue) }
+    }
+
+    var autoNamedLabels: Set<String> {
+        get {
+            guard let data = autoNamedLabelsData else { return [] }
+            return Set((try? JSONDecoder().decode([String].self, from: data)) ?? [])
+        }
+        set { autoNamedLabelsData = newValue.isEmpty ? nil : try? JSONEncoder().encode(Array(newValue).sorted()) }
+    }
+
+    /// Sets or clears one voice's name. A name the user chose (or confirmed)
+    /// clears the automatic mark; a recognized one sets it, so the card can
+    /// show it as reversible.
+    func setSpeakerName(_ name: String?, for label: String, automatic: Bool = false) {
+        var names = speakerNames
+        names[label] = name?.nilIfEmpty
+        speakerNames = names
+        var auto = autoNamedLabels
+        if automatic, name?.nilIfEmpty != nil { auto.insert(label) } else { auto.remove(label) }
+        autoNamedLabels = auto
     }
 
     /// Distinct non-Me speaker labels, "Speaker 1" first.
