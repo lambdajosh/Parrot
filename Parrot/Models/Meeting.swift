@@ -387,10 +387,26 @@ final class Meeting {
     }
 
     /// Invitees from the calendar not yet attached to a voice, as identities
-    /// (display them through PeopleDirectory, assign them as they are).
+    /// (display them through PeopleDirectory, assign them as they are). An
+    /// invitee counts as attached when a voice carries their identity OR
+    /// their display name, so a voice named "Allison Beck" claims the
+    /// address aliased to that name.
     var unassignedInvitees: [String] {
-        let taken = Set(speakerNames.values.map(PeopleDirectory.canonical))
-        return attendeeIdentities.filter { !taken.contains(PeopleDirectory.canonical($0)) }
+        var taken = Set<String>()
+        for value in speakerNames.values {
+            taken.insert(PeopleDirectory.canonical(value))
+            taken.insert(PeopleDirectory.canonical(PeopleDirectory.displayName(for: value)))
+        }
+        return attendeeIdentities.filter {
+            !taken.contains(PeopleDirectory.canonical($0))
+                && !taken.contains(PeopleDirectory.canonical(PeopleDirectory.displayName(for: $0)))
+        }
+    }
+
+    /// Every way an invitee may be named: raw identities and their display
+    /// names. What voice matching compares remembered-voice names against.
+    var inviteeNameSet: Set<String> {
+        Set(attendeeIdentities + attendeeNames)
     }
 
     /// The one invitee left for the one voice left. As close to certain as

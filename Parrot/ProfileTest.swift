@@ -1102,6 +1102,42 @@ enum ProfileTest {
               m.attendeeNames == ["Grace Hopper"] && m.attendeeIdentities == ["grace@x.com"])
         check("people: an aliased invitee counts as assigned", m.unassignedInvitees.isEmpty)
         check("people: participants summary uses the alias", m.participantsSummary == "Grace Hopper")
+
+        // The Settings list: merged by name, voices first, then named, then addresses.
+        let people = PD.people(
+            voices: [("Allison Beck", 2), ("alaski@lambdal.com", 1)],
+            aliases: ["allison.beck@lambdal.com": "Allison Beck", "zed@x.com": "Zed"],
+            inviteIdentities: ["alex.cook@lambdal.com", "allison.beck@lambdal.com"])
+        check("people: address aliased to a voice's name merges into that voice",
+              people.first { $0.name == "Allison Beck" }.map { $0.identities.contains("allison.beck@lambdal.com") && $0.voiceName == "Allison Beck" } == true)
+        check("people: voices come first, then named, then bare addresses",
+              people.map(\.name) == ["alaski@lambdal.com", "Allison Beck", "Zed", "alex.cook@lambdal.com"])
+        check("people: a voice named by address is not 'named'",
+              people.first { $0.name == "alaski@lambdal.com" }?.isNamed == false)
+        check("people: the list has no duplicates", people.count == 4)
+
+        // An aliased address counts as assigned once a voice carries the name.
+        let m2 = Meeting(title: "q")
+        ctx.insert(m2)
+        m2.attendeesData = try? JSONEncoder().encode([ScheduledMeeting.Attendee(name: "allison.beck@lambdal.com", email: nil, isMe: false)])
+        let seg2 = TranscriptSegment(startTime: 0, endTime: 1, text: "hi", speakerLabel: "Speaker 1")
+        ctx.insert(seg2); seg2.meeting = m2
+        PD.setAlias("Allison Beck", for: "allison.beck@lambdal.com")
+        m2.setSpeakerName("Allison Beck", for: "Speaker 1")
+        check("people: voice named like the aliased invitee claims the invitee", m2.unassignedInvitees.isEmpty)
+        check("people: invitee name set carries both spellings",
+              m2.inviteeNameSet.contains("allison.beck@lambdal.com") && m2.inviteeNameSet.contains("Allison Beck"))
+
+        // Renaming a voice onto an existing name merges the two samples.
+        SpeakerProfileStore.remember(name: "Allison Beck", embedding: [1, 0, 0], in: ctx)
+        SpeakerProfileStore.remember(name: "allison.beck@lambdal.com", embedding: [0, 1, 0], in: ctx)
+        if let byAddress = SpeakerProfileStore.profiles(in: ctx).first(where: { $0.name == "allison.beck@lambdal.com" }) {
+            SpeakerProfileStore.rename(byAddress, to: "Allison Beck", in: ctx)
+        }
+        let merged = SpeakerProfileStore.profiles(in: ctx).filter { $0.name.lowercased() == "allison beck" }
+        check("people: rename onto an existing voice merges into one",
+              merged.count == 1 && merged.first?.sampleCount == 2 && abs((merged.first?.embedding[0] ?? 0) - 0.5) < 0.001)
+        SpeakerProfileStore.deleteAll(in: ctx)
     }
 
     // Calendar context: link detection, Meet boilerplate stripping, matching.

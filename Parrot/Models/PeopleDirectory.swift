@@ -56,6 +56,71 @@ enum PeopleDirectory {
     }
 }
 
+// MARK: - The People list
+
+extension PeopleDirectory {
+    /// One person as the Settings list shows them: a display name, every
+    /// identity that resolves to it (a voice's name, an address or two), and
+    /// the remembered voice if any. Identities merge by display name, so an
+    /// address aliased "Allison Beck" and a voice named "Allison Beck" are
+    /// one person.
+    struct Person: Equatable {
+        var name: String
+        var identities: [String]
+        var voiceName: String?
+        var voiceSamples: Int
+        /// Something was typed for this person: an alias, or a voice with a
+        /// real name (not an address).
+        var isNamed: Bool
+
+        var addresses: [String] { identities.filter { PeopleDirectory.looksLikeEmail($0) } }
+        var hasVoice: Bool { voiceName != nil }
+    }
+
+    /// Builds the list. Voices first, then named people without a voice, then
+    /// bare addresses from invites; each group alphabetical.
+    static func people(voices: [(name: String, samples: Int)], aliases: [String: String],
+                       inviteIdentities: [String]) -> [Person] {
+        var byName: [String: Person] = [:]
+        var order: [String] = []
+        func key(_ identity: String) -> String {
+            canonical(aliases[canonical(identity)]?.nilIfEmpty ?? identity)
+        }
+        func upsert(_ identity: String, voice: (name: String, samples: Int)? = nil) {
+            let k = key(identity)
+            guard !k.isEmpty else { return }
+            if var existing = byName[k] {
+                if !existing.identities.contains(where: { canonical($0) == canonical(identity) }) {
+                    existing.identities.append(identity)
+                }
+                if let voice, existing.voiceName == nil {
+                    existing.voiceName = voice.name
+                    existing.voiceSamples = voice.samples
+                }
+                if aliases[canonical(identity)] != nil { existing.isNamed = true }
+                byName[k] = existing
+            } else {
+                order.append(k)
+                let alias = aliases[canonical(identity)]?.nilIfEmpty
+                byName[k] = Person(
+                    name: alias ?? identity,
+                    identities: [identity],
+                    voiceName: voice?.name,
+                    voiceSamples: voice?.samples ?? 0,
+                    isNamed: alias != nil || (voice != nil && !looksLikeEmail(identity)))
+            }
+        }
+        for voice in voices { upsert(voice.name, voice: voice) }
+        for (identity, _) in aliases { upsert(identity) }
+        for identity in inviteIdentities { upsert(identity) }
+        func rank(_ p: Person) -> Int { p.hasVoice ? 0 : (p.isNamed ? 1 : 2) }
+        return order.compactMap { byName[$0] }.sorted { a, b in
+            if rank(a) != rank(b) { return rank(a) < rank(b) }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+    }
+}
+
 extension Notification.Name {
     /// An alias was added, changed, or removed; views showing names redraw.
     static let parrotPeopleChanged = Notification.Name("parrotPeopleChanged")

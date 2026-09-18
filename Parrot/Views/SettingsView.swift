@@ -126,29 +126,25 @@ struct SettingsView: View {
             + "\(calendarContextEnabled)|\(meetingReminders)|\(autoRecordMeetings)|\(launchAtLogin)"
     }
 
-    /// One row per person Parrot knows, merged by identity: remembered
-    /// voices first bring their profile along, aliases and recent invite
-    /// addresses fill in the rest. Sorted by how the name reads.
-    private var peopleRows: [(identity: String, voice: SpeakerProfile?)] {
-        var byKey: [String: (identity: String, voice: SpeakerProfile?)] = [:]
-        var order: [String] = []
-        func add(_ identity: String, _ voice: SpeakerProfile?) {
-            let k = PeopleDirectory.canonical(identity)
-            guard !k.isEmpty else { return }
-            if byKey[k] == nil {
-                order.append(k)
-                byKey[k] = (identity, voice)
-            } else if let voice, byKey[k]?.voice == nil {
-                byKey[k]?.voice = voice
-            }
-        }
-        for profile in voiceProfiles { add(profile.name, profile) }
-        for identity in PeopleDirectory.aliases().keys { add(identity, nil) }
-        for identity in unnamedInviteeIdentities { add(identity, nil) }
-        return order.compactMap { byKey[$0] }.sorted {
-            PeopleDirectory.displayName(for: $0.identity)
-                .localizedStandardCompare(PeopleDirectory.displayName(for: $1.identity)) == .orderedAscending
-        }
+    /// Everyone Parrot knows, merged by display name (see PeopleDirectory.people).
+    private var people: [PeopleDirectory.Person] {
+        PeopleDirectory.people(
+            voices: voiceProfiles.map { ($0.name, $0.sampleCount) },
+            aliases: PeopleDirectory.aliases(),
+            inviteIdentities: unnamedInviteeIdentities)
+    }
+
+    private func profile(named name: String?) -> SpeakerProfile? {
+        guard let name else { return nil }
+        return voiceProfiles.first { $0.name == name }
+    }
+
+    private func peopleGroupHeader(_ title: String, count: Int) -> some View {
+        Text("\(title) · \(count)")
+            .textCase(.uppercase)
+            .font(Theme.Typography.cap)
+            .foregroundStyle(Theme.Colors.ink3)
+            .padding(.top, 4)
     }
 
     /// Addresses from the last 30 meetings' invites that have no alias yet.
@@ -523,15 +519,27 @@ struct SettingsView: View {
             }
 
             Section("People") {
-                Hint("Everyone Parrot knows: remembered voices, names you gave, and addresses from recent invites. Type a name on a row and press Return; it shows everywhere that person appears, past meetings included.")
-                let rows = peopleRows
+                Hint("Type a name on a row and press Return; it shows everywhere that person appears, past meetings included. An address given the same name as a voice becomes that person.")
+                let rows = people
                 if rows.isEmpty {
                     Text("No one yet. People appear here after you name a voice or an invite arrives with an address.")
                         .font(Theme.Typography.caption)
                         .foregroundStyle(Theme.Colors.ink3)
                 }
-                ForEach(rows, id: \.identity) { row in
-                    PersonRow(identity: row.identity, voice: row.voice)
+                let voices = rows.filter(\.hasVoice)
+                let named = rows.filter { !$0.hasVoice && $0.isNamed }
+                let addresses = rows.filter { !$0.hasVoice && !$0.isNamed }
+                if !voices.isEmpty {
+                    peopleGroupHeader("Voices heard", count: voices.count)
+                    ForEach(voices, id: \.name) { PersonRow(person: $0, voice: profile(named: $0.voiceName)) }
+                }
+                if !named.isEmpty {
+                    peopleGroupHeader("Named, no voice yet", count: named.count)
+                    ForEach(named, id: \.name) { PersonRow(person: $0, voice: nil) }
+                }
+                if !addresses.isEmpty {
+                    peopleGroupHeader("Addresses from recent invites", count: addresses.count)
+                    ForEach(addresses, id: \.name) { PersonRow(person: $0, voice: nil) }
                 }
                 HStack(spacing: 8) {
                     TextField("email or identity", text: $newPersonIdentity)
@@ -958,27 +966,27 @@ struct PermissionStatusRow: View {
     }
 }
 
-/// One person: the name as an editable field, the identity behind it in
-/// grey when they differ, the remembered voice if any. Editing is in place,
-/// no popover: type and press Return, or just click away, and the alias is
-/// saved. Typing the identity itself (or nothing) clears the alias.
+/// One person: the name as an editable field, their addresses in grey, the
+/// remembered voice if any. Editing is in place: type and press Return, or
+/// click away, and it saves. Saving a name writes the alias for every
+/// address of this person and renames the voice to match, so the row stays
+/// one person; clearing the field removes the aliases and leaves the voice.
 struct PersonRow: View {
-    let identity: String
+    let person: PeopleDirectory.Person
     let voice: SpeakerProfile?
     @Environment(\.modelContext) private var modelContext
     @State private var draft = ""
     @FocusState private var focused: Bool
 
-    private var alias: String? { PeopleDirectory.alias(for: identity) }
-    private var isEmail: Bool { PeopleDirectory.looksLikeEmail(identity) }
-    /// What the field starts with: the alias, or the identity when it already
-    /// reads as a name, or empty for a bare address.
-    private var baseline: String { alias ?? (isEmail ? "" : identity) }
+    /// What the field starts with: the person's name, or empty when the only
+    /// name we have is an address.
+    private var baseline: String { PeopleDirectory.looksLikeEmail(person.name) ? "" : person.name }
     private var dirty: Bool { draft.trimmingCharacters(in: .whitespaces) != baseline }
 
     var body: some View {
         HStack(spacing: 10) {
-            TextField(isEmail ? "Name for this address" : "Name", text: $draft)
+            TextField("", text: $draft, prompt: Text("Name"))
+                .labelsHidden()
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 200)
                 .focused($focused)
@@ -988,25 +996,24 @@ struct PersonRow: View {
                 Button("Save", action: save)
                     .controlSize(.small)
             }
-            if isEmail || alias != nil {
-                Text(identity)
+            if !person.addresses.isEmpty {
+                Text(person.addresses.joined(separator: ", "))
                     .foregroundStyle(Theme.Colors.ink2)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             Spacer()
             if let voice {
-                Text("voice heard \(voice.sampleCount)×")
+                Text("heard \(voice.sampleCount)×")
                     .foregroundStyle(Theme.Colors.ink2)
                 Button("Forget Voice") { SpeakerProfileStore.delete(voice, in: modelContext) }
                     .controlSize(.small)
-            } else {
-                Text("no voice yet")
-                    .foregroundStyle(Theme.Colors.ink3)
             }
-            if alias != nil {
-                Button("Clear Name") { PeopleDirectory.setAlias(nil, for: identity) }
-                    .controlSize(.small)
+            if person.isNamed, !person.addresses.isEmpty {
+                Button("Clear Name") {
+                    for address in person.addresses { PeopleDirectory.setAlias(nil, for: address) }
+                }
+                .controlSize(.small)
             }
         }
         .font(Theme.Typography.caption)
@@ -1015,11 +1022,22 @@ struct PersonRow: View {
 
     private func save() {
         let trimmed = draft.trimmingCharacters(in: .whitespaces)
-        if trimmed.isEmpty || PeopleDirectory.canonical(trimmed) == PeopleDirectory.canonical(identity) {
-            if alias != nil { PeopleDirectory.setAlias(nil, for: identity) }
+        guard dirty else { return }
+        if trimmed.isEmpty {
+            for address in person.addresses { PeopleDirectory.setAlias(nil, for: address) }
             draft = baseline
-        } else if trimmed != alias {
-            PeopleDirectory.setAlias(trimmed, for: identity)
+            return
+        }
+        for address in person.addresses { PeopleDirectory.setAlias(trimmed, for: address) }
+        if let voice, voice.name != trimmed {
+            // Past meetings store the old voice name; an alias keeps them reading right.
+            if !PeopleDirectory.looksLikeEmail(voice.name) { PeopleDirectory.setAlias(trimmed, for: voice.name) }
+            SpeakerProfileStore.rename(voice, to: trimmed, in: modelContext)
+        }
+        if person.addresses.isEmpty, voice == nil {
+            // A named person with no address and no voice: the alias hangs
+            // off the old name so the transcript follows the rename.
+            for identity in person.identities { PeopleDirectory.setAlias(trimmed, for: identity) }
         }
     }
 }
