@@ -170,9 +170,15 @@ final class Meeting {
         return (try? JSONDecoder().decode([ScheduledMeeting.Attendee].self, from: data)) ?? []
     }
 
-    /// Invitees other than the user, for the header and as naming candidates.
-    var attendeeNames: [String] {
+    /// Invitees other than the user as stored: a name when the calendar had
+    /// one, otherwise the address. This is what gets assigned to a voice.
+    var attendeeIdentities: [String] {
         attendees.filter { !$0.isMe && !$0.name.isEmpty }.map(\.name)
+    }
+
+    /// Invitees other than the user as people read them: aliases applied.
+    var attendeeNames: [String] {
+        attendeeIdentities.map { PeopleDirectory.displayName(for: $0) }
     }
 
     /// Takes the calendar's word for what this meeting is. The title is only
@@ -336,11 +342,13 @@ final class Meeting {
     func displayName(forSpeaker label: String?) -> String {
         let names = speakerNames
         guard let label, !label.isEmpty else {
-            return names.isEmpty ? (themName ?? "Them") : "Them"
+            return names.isEmpty ? themName.map { PeopleDirectory.displayName(for: $0) } ?? "Them" : "Them"
         }
-        if let assigned = names[label] { return assigned }
+        // Names are stored as the identity the user picked (often an address
+        // from the invite); the alias, when there is one, is what people read.
+        if let assigned = names[label] { return PeopleDirectory.displayName(for: assigned) }
         if label == "Me" { return "Me" }
-        return names.isEmpty ? (themName ?? label) : label
+        return names.isEmpty ? themName.map { PeopleDirectory.displayName(for: $0) } ?? label : label
     }
 
     /// Mean voice embedding per label, as written by diarization.
@@ -378,10 +386,11 @@ final class Meeting {
         autoNamedLabels = auto
     }
 
-    /// Invitees from the calendar not yet attached to a voice.
+    /// Invitees from the calendar not yet attached to a voice, as identities
+    /// (display them through PeopleDirectory, assign them as they are).
     var unassignedInvitees: [String] {
-        let taken = Set(speakerNames.values)
-        return attendeeNames.filter { !taken.contains($0) }
+        let taken = Set(speakerNames.values.map(PeopleDirectory.canonical))
+        return attendeeIdentities.filter { !taken.contains(PeopleDirectory.canonical($0)) }
     }
 
     /// The one invitee left for the one voice left. As close to certain as
@@ -410,7 +419,7 @@ final class Meeting {
     /// Named participants joined for list subtitles; nil until someone is
     /// named (callers fall back to `themName`).
     var participantsSummary: String? {
-        let named = otherSpeakerLabels.compactMap { speakerNames[$0] }
+        let named = otherSpeakerLabels.compactMap { speakerNames[$0] }.map { PeopleDirectory.displayName(for: $0) }
         return named.isEmpty ? nil : named.joined(separator: ", ")
     }
 

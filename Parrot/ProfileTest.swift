@@ -47,6 +47,7 @@ enum ProfileTest {
         testAudioSplitter()
         testScheduledMeeting()
         testMeetingScheduler()
+        testPeopleDirectory()
         print(failures == 0 ? "ALL PASS" : "FAILURES: \(failures)")
         exit(failures == 0 ? 0 : 1)
     }
@@ -1002,6 +1003,49 @@ enum ProfileTest {
               (try? AudioSplitter.split(fileAt: source, at: 5, head: dir.appendingPathComponent("x.caf"),
                                         tail: dir.appendingPathComponent("y.caf"))) == nil
                 && !FileManager.default.fileExists(atPath: dir.appendingPathComponent("x.caf").path))
+    }
+
+    // Aliases: an address from the invite reads as a name everywhere.
+    @MainActor
+    static func testPeopleDirectory() {
+        let suite = "parrot-people-test"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        typealias PD = PeopleDirectory
+        check("people: no alias returns the identity", PD.displayName(for: "alaski@lambdal.com", defaults: defaults) == "alaski@lambdal.com")
+        PD.setAlias("Andrew Laski", for: " ALaski@Lambdal.com ", defaults: defaults)
+        check("people: alias is case- and space-insensitive",
+              PD.displayName(for: "alaski@lambdal.com", defaults: defaults) == "Andrew Laski")
+        check("people: email detection", PD.looksLikeEmail("alaski@lambdal.com") && !PD.looksLikeEmail("Andrew Laski") && !PD.looksLikeEmail("@x"))
+        PD.setAlias("", for: "alaski@lambdal.com", defaults: defaults)
+        check("people: empty alias clears", PD.alias(for: "alaski@lambdal.com", defaults: defaults) == nil)
+
+        // Through the meeting: stored identities stay raw, display resolves.
+        let schema = Schema([Meeting.self, TranscriptSegment.self, CallInsight.self, CallProfile.self, SpeakerProfile.self])
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        guard let container = try? ModelContainer(for: schema, configurations: [config]) else {
+            check("people container builds", false); return
+        }
+        let ctx = ModelContext(container)
+        let m = Meeting(title: "p")
+        ctx.insert(m)
+        m.attendeesData = try? JSONEncoder().encode([ScheduledMeeting.Attendee(name: "grace@x.com", email: "grace@x.com", isMe: false)])
+        let seg = TranscriptSegment(startTime: 0, endTime: 1, text: "hi", speakerLabel: "Speaker 1")
+        ctx.insert(seg); seg.meeting = m
+        m.setSpeakerName("grace@x.com", for: "Speaker 1")
+        check("people: unaliased identity shows as itself", m.displayName(forSpeaker: "Speaker 1") == "grace@x.com")
+        // The live directory is UserDefaults.standard; restore it after.
+        let previous = UserDefaults.standard.data(forKey: PD.key)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: PD.key) } else { UserDefaults.standard.removeObject(forKey: PD.key) }
+        }
+        PD.setAlias("Grace Hopper", for: "grace@x.com")
+        check("people: transcript name resolves the alias", m.displayName(forSpeaker: "Speaker 1") == "Grace Hopper")
+        check("people: header shows the alias, identity stays stored",
+              m.attendeeNames == ["Grace Hopper"] && m.attendeeIdentities == ["grace@x.com"])
+        check("people: an aliased invitee counts as assigned", m.unassignedInvitees.isEmpty)
+        check("people: participants summary uses the alias", m.participantsSummary == "Grace Hopper")
     }
 
     // Calendar context: link detection, Meet boilerplate stripping, matching.

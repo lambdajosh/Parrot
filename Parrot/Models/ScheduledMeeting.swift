@@ -25,9 +25,11 @@ struct ScheduledMeeting: Identifiable, Equatable, Codable {
 
     var isVideoCall: Bool { videoLink != nil }
 
-    /// Everyone but the user, in invitation order.
+    /// Everyone but the user, in invitation order, as people read them
+    /// (aliases from PeopleDirectory applied, so a brief says "Andrew Laski",
+    /// not an address).
     var otherNames: [String] {
-        attendees.filter { !$0.isMe && !$0.name.isEmpty }.map(\.name)
+        attendees.filter { !$0.isMe && !$0.name.isEmpty }.map { PeopleDirectory.displayName(for: $0.name) }
     }
 
     /// The event's description with Google's Meet boilerplate removed, or nil

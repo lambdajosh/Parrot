@@ -92,6 +92,14 @@ struct SettingsView: View {
     @AppStorage(SpeakerProfileStore.autoNameKey) private var autoNameVoices = true
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SpeakerProfile.name) private var voiceProfiles: [SpeakerProfile]
+    /// Recent meetings, for the addresses the calendar handed over that still
+    /// have no name.
+    @Query(sort: \Meeting.date, order: .reverse) private var recentMeetings: [Meeting]
+    /// Bumped when an alias changes so the lists below re-read the directory.
+    @State private var peopleVersion = 0
+    @State private var aliasEditingIdentity: String?
+    @State private var newPersonIdentity = ""
+    @State private var newPersonName = ""
     @State private var showFileImporter = false
     /// There's no Save button — @AppStorage persists on every change. This
     /// drives a small transient "Saved" chip so that's visible, debounced so
@@ -117,6 +125,20 @@ struct SettingsView: View {
             + "\(customVocabulary)|\(echoCancellation)|\(transcriptionBackend)|\(polishAfterCall)|"
             + "\(copilotPace)|\(copilotWindow)|\(livePreview)|\(autoSaveTranscripts)|\(transcriptDirectory)|"
             + "\(calendarContextEnabled)|\(meetingReminders)|\(autoRecordMeetings)|\(launchAtLogin)"
+    }
+
+    /// Addresses from the last 30 meetings' invites that have no alias yet.
+    private var unnamedInviteeIdentities: [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for meeting in recentMeetings.prefix(30) {
+            for identity in meeting.attendeeIdentities
+            where PeopleDirectory.looksLikeEmail(identity) && PeopleDirectory.alias(for: identity) == nil {
+                let k = PeopleDirectory.canonical(identity)
+                if seen.insert(k).inserted { result.append(identity) }
+            }
+        }
+        return result
     }
 
     private func flashSavedToast() {
@@ -475,7 +497,9 @@ struct SettingsView: View {
                     Hint("A very close match is named without asking and marked so you can undo it; looser matches stay one-click suggestions.")
                     ForEach(voiceProfiles) { profile in
                         HStack {
-                            Text(profile.name)
+                            // The name is a button: click it to give this
+                            // identity (often an address) a readable alias.
+                            PersonNameButton(identity: profile.name, editing: $aliasEditingIdentity)
                             Text("heard \(profile.sampleCount)×")
                                 .foregroundStyle(Theme.Colors.ink2)
                             Spacer()
@@ -491,6 +515,56 @@ struct SettingsView: View {
                         }
                     }
                 }
+            }
+
+            Section("People") {
+                Hint("Calendar invites often carry only an address. Give it a name here and every transcript, report, and export shows the name instead.")
+                let aliases = PeopleDirectory.aliases().sorted { $0.value.localizedStandardCompare($1.value) == .orderedAscending }
+                ForEach(aliases, id: \.key) { identity, name in
+                    HStack {
+                        PersonNameButton(identity: identity, editing: $aliasEditingIdentity)
+                        Text(identity)
+                            .foregroundStyle(Theme.Colors.ink2)
+                            .lineLimit(1)
+                        Spacer()
+                        Button("Forget") { PeopleDirectory.setAlias(nil, for: identity) }
+                    }
+                    .font(Theme.Typography.caption)
+                }
+                // Addresses seen in recent invites with no name yet: one click
+                // to name them, instead of remembering who is who.
+                let unnamed = unnamedInviteeIdentities
+                if !unnamed.isEmpty {
+                    ForEach(unnamed, id: \.self) { identity in
+                        HStack {
+                            PersonNameButton(identity: identity, editing: $aliasEditingIdentity)
+                            Text("from a recent invite, no name yet")
+                                .foregroundStyle(Theme.Colors.ink3)
+                            Spacer()
+                        }
+                        .font(Theme.Typography.caption)
+                    }
+                }
+                HStack(spacing: 8) {
+                    TextField("email or identity", text: $newPersonIdentity)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 220)
+                    TextField("Name", text: $newPersonName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 180)
+                    Button("Add") {
+                        PeopleDirectory.setAlias(newPersonName, for: newPersonIdentity)
+                        newPersonIdentity = ""
+                        newPersonName = ""
+                    }
+                    .disabled(newPersonIdentity.trimmingCharacters(in: .whitespaces).isEmpty
+                              || newPersonName.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                .font(Theme.Typography.caption)
+            }
+            .id(peopleVersion)
+            .onReceive(NotificationCenter.default.publisher(for: .parrotPeopleChanged)) { _ in
+                peopleVersion &+= 1
             }
 
             Section("Language") {
@@ -888,6 +962,72 @@ struct PermissionStatusRow: View {
                     .frame(width: 8, height: 8)
             }
         }
+    }
+}
+
+/// A person's name as a button: click to set or change the alias for the
+/// identity behind it. Shows the alias when there is one, the identity
+/// otherwise, and the identity in grey next to an alias so both are visible.
+struct PersonNameButton: View {
+    let identity: String
+    @Binding var editing: String?
+    @State private var draft = ""
+
+    private var isEditing: Binding<Bool> {
+        Binding(get: { editing == identity }, set: { if !$0 { editing = nil } })
+    }
+
+    var body: some View {
+        Button {
+            draft = PeopleDirectory.alias(for: identity) ?? ""
+            editing = identity
+        } label: {
+            HStack(spacing: 6) {
+                Text(PeopleDirectory.displayName(for: identity))
+                    .foregroundStyle(Theme.Colors.accent)
+                    .underline(pattern: .dot)
+                if PeopleDirectory.alias(for: identity) != nil,
+                   PeopleDirectory.canonical(identity) != PeopleDirectory.canonical(PeopleDirectory.displayName(for: identity)) {
+                    Text(identity)
+                        .foregroundStyle(Theme.Colors.ink3)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .help("Set the name shown for \(identity)")
+        .popover(isPresented: isEditing, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Name for \(identity)")
+                    .font(Theme.Typography.caption)
+                    .fontWeight(.semibold)
+                TextField("e.g. Andrew Laski", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { save() }
+                HStack {
+                    Button("Save") { save() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if PeopleDirectory.alias(for: identity) != nil {
+                        Button("Clear") {
+                            PeopleDirectory.setAlias(nil, for: identity)
+                            editing = nil
+                        }
+                    }
+                    Spacer()
+                }
+                Text("Applies everywhere this identity appears, in past meetings too.")
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(Theme.Colors.ink3)
+            }
+            .padding(12)
+            .frame(width: 300)
+        }
+    }
+
+    private func save() {
+        PeopleDirectory.setAlias(draft, for: identity)
+        editing = nil
     }
 }
 

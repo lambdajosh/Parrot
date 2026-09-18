@@ -49,6 +49,8 @@ struct MeetingDetailView: View {
     @State private var showSplitPrompt = false
     @State private var splitClockText = ""
     @State private var splitErrorText: String?
+    /// Bumped when an alias changes so every name on screen re-resolves.
+    @State private var peopleVersion = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -98,6 +100,10 @@ struct MeetingDetailView: View {
         .onDisappear {
             stopPlayback()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .parrotPeopleChanged)) { _ in
+            peopleVersion &+= 1
+        }
+        .id(peopleVersion)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $tab) {
@@ -718,10 +724,11 @@ struct MeetingDetailView: View {
             // Confirm that turns it into a user-vouched name.
             ForEach(autoNamedSpeakerLabels, id: \.self) { label in
                 let name = meeting.speakerNames[label] ?? label
+                let shown = PeopleDirectory.displayName(for: name)
                 HStack(spacing: 10) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(Theme.Colors.good)
-                    Text(name)
+                    Text(shown)
                         .font(Theme.Typography.caption)
                         .fontWeight(.medium)
                         .frame(width: 70, alignment: .leading)
@@ -738,7 +745,7 @@ struct MeetingDetailView: View {
                     }
                     Button("Confirm") { confirmVoice(label: label, name: name) }
                         .font(Theme.Typography.caption)
-                    Button("Not \(name)") { meeting.setSpeakerName(nil, for: label) }
+                    Button("Not \(shown)") { meeting.setSpeakerName(nil, for: label) }
                         .font(Theme.Typography.caption)
                         .help("Clear the name; the voice goes back to the list below to be named")
                     Spacer()
@@ -760,12 +767,12 @@ struct MeetingDetailView: View {
                         Button {
                             confirmVoice(label: label, name: match.name)
                         } label: {
-                            Label("Sounds like \(match.name)? Confirm", systemImage: "person.crop.circle.badge.checkmark")
+                            Label("Sounds like \(PeopleDirectory.displayName(for: match.name))? Confirm", systemImage: "person.crop.circle.badge.checkmark")
                                 .font(Theme.Typography.caption)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
-                        .help("One click names this voice \(match.name) and strengthens their remembered voiceprint")
+                        .help("One click names this voice \(PeopleDirectory.displayName(for: match.name)) and strengthens their remembered voiceprint")
                     } else if let guess = meeting.soleInviteeGuess {
                         // One voice left, one invitee left: the calendar's
                         // best guess, offered rather than applied, since an
@@ -773,7 +780,7 @@ struct MeetingDetailView: View {
                         Button {
                             confirmVoice(label: label, name: guess)
                         } label: {
-                            Label("Probably \(guess)? Confirm", systemImage: "calendar.badge.checkmark")
+                            Label("Probably \(PeopleDirectory.displayName(for: guess))? Confirm", systemImage: "calendar.badge.checkmark")
                                 .font(Theme.Typography.caption)
                         }
                         .buttonStyle(.bordered)
@@ -782,8 +789,8 @@ struct MeetingDetailView: View {
                     } else {
                         // The invite list, minus people already matched: one
                         // click here instead of a trip into Name….
-                        ForEach(Array(meeting.unassignedInvitees.prefix(4)), id: \.self) { name in
-                            Button(name) { confirmVoice(label: label, name: name) }
+                        ForEach(Array(meeting.unassignedInvitees.prefix(4)), id: \.self) { identity in
+                            Button(PeopleDirectory.displayName(for: identity)) { confirmVoice(label: label, name: identity) }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
                                 .font(Theme.Typography.caption)
@@ -965,7 +972,7 @@ struct SpeakerNamePopover: View {
                 Button {
                     assign(suggestion.name)
                 } label: {
-                    Label("Sounds like \(suggestion.name) — confirm",
+                    Label("Sounds like \(PeopleDirectory.displayName(for: suggestion.name)), confirm",
                           systemImage: "person.crop.circle.badge.checkmark")
                         .font(Theme.Typography.caption)
                         .fontWeight(.medium)
@@ -995,10 +1002,9 @@ struct SpeakerNamePopover: View {
             // Invitees from the calendar, minus anyone already assigned to a
             // voice: one click instead of typing. Still a confirmation, since
             // the user chooses which invitee this voice is.
-            let taken = Set(meeting.speakerNames.values)
-            let candidates = meeting.attendeeNames.filter { !taken.contains($0) }
+            let candidates = meeting.unassignedInvitees
             if !candidates.isEmpty {
-                FlowChips(names: candidates) { assign($0) }
+                FlowChips(identities: candidates) { assign($0) }
             }
 
             TextField("Type a name — e.g. Gürkan", text: $name)
@@ -1020,20 +1026,21 @@ struct SpeakerNamePopover: View {
 
 /// A wrapping row of clickable name chips (calendar invitees in the naming popover).
 private struct FlowChips: View {
-    let names: [String]
+    /// What gets assigned; the chip shows the alias when one exists.
+    let identities: [String]
     let pick: (String) -> Void
 
     var body: some View {
         // Popover is 300 pt wide; a few names per row is plenty, and an
         // invite list longer than a handful is trimmed to keep it a hint.
-        let shown = Array(names.prefix(8))
+        let shown = Array(identities.prefix(8))
         VStack(alignment: .leading, spacing: 6) {
             Text("From the invite:")
                 .font(Theme.Typography.caption)
                 .foregroundStyle(Theme.Colors.ink2)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 80), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
-                ForEach(shown, id: \.self) { name in
-                    Button(name) { pick(name) }
+                ForEach(shown, id: \.self) { identity in
+                    Button(PeopleDirectory.displayName(for: identity)) { pick(identity) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                 }
