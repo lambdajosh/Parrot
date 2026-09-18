@@ -64,6 +64,7 @@ final class TranscriptionEngine {
     /// Chunks the acoustic gate refused this session, and committed texts the
     /// script check refused; logged at stop so a bad call can be read back.
     @ObservationIgnored private var unvoicedChunksDropped = 0
+    @ObservationIgnored private var toneChunksDropped = 0
     @ObservationIgnored private var scriptMismatchesDropped = 0
     static let oslog = Logger(subsystem: "com.uygar.parrot", category: "transcription")
 
@@ -414,6 +415,46 @@ final class TranscriptionEngine {
         /// vowels, so this is a low bar for speech and a wall for clatter.
         static let minVoicedFraction: Float = 0.2
 
+        /// A chime is voiced too (a tone has a low, steady crossing rate), so
+        /// the voiced gate lets it through and Whisper reads it as "you".
+        /// Measured on the 2026-09-18 call: the Meet join/leave chime is a
+        /// ~480 Hz tone, 1.7 s, whose per-frame zero-crossing rate varies by
+        /// 0.005–0.006 (sd) across its 11 energetic frames; real speech in the
+        /// same recording varied by 0.06–0.11. A chunk of at most `toneMaxFrames`
+        /// energetic frames with a spread under 0.02 is a tone, not a voice.
+        static let toneZeroCrossingSpread: Float = 0.02
+        static let toneMinFrames = 5
+        /// 4 s. A held note or beep is short; a person holding one pitch this
+        /// steadily for longer is not something a meeting produces.
+        static let toneMaxFrames = 40
+
+        static func looksLikeTone(_ buffer: [Float], floor: Float) -> Bool {
+            let rates = zeroCrossingRates(buffer, floor: floor)
+            guard rates.count >= toneMinFrames, rates.count <= toneMaxFrames else { return false }
+            let mean = rates.reduce(0, +) / Float(rates.count)
+            let variance = rates.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Float(rates.count)
+            return variance.squareRoot() < toneZeroCrossingSpread
+        }
+
+        /// Per-frame zero-crossing rate over signal-bearing samples, for the
+        /// frames at or above `floor`.
+        static func zeroCrossingRates(_ buffer: [Float], floor: Float) -> [Float] {
+            let frames = buffer.count / frame
+            var rates: [Float] = []
+            for i in 0..<frames where frameEnergy(buffer, i) >= floor {
+                var crossings = 0, active = 0
+                var lastPositive: Bool?
+                for j in (i * frame)..<((i + 1) * frame) where abs(buffer[j]) >= ditherFloor {
+                    active += 1
+                    let positive = buffer[j] >= 0
+                    if let last = lastPositive, last != positive { crossings += 1 }
+                    lastPositive = positive
+                }
+                if active > 0 { rates.append(Float(crossings) / Float(active)) }
+            }
+            return rates
+        }
+
         /// Fraction of frames at or above `floor` whose zero-crossing rate is
         /// below the voiced ceiling. 0 for an all-silent chunk. The rate is
         /// measured over the samples that carry signal (above `ditherFloor`):
@@ -648,6 +689,7 @@ final class TranscriptionEngine {
                                 : pending.reduce(into: Float(0)) { $0 += abs($1) } / Float(pending.count)
                             if energy > floor,
                                Segmenter.voicedFraction(pending, floor: floor) >= Segmenter.minVoicedFraction,
+                               !Segmenter.looksLikeTone(pending, floor: floor),
                                let whisperKit = self.whisperKit {
                                 // No interim callback here on purpose: each preview
                                 // re-decodes from the utterance's start, so streaming
@@ -708,6 +750,13 @@ final class TranscriptionEngine {
                         if Self.loopTrace {
                             print(String(format: "TRACE %@ [%.2f-%.2f] dropped: voiced %.2f < %.2f",
                                          source.label, startTime, endTime, voiced, Segmenter.minVoicedFraction))
+                        }
+                        continue
+                    }
+                    if Segmenter.looksLikeTone(chunk, floor: floor) {
+                        self.toneChunksDropped += 1
+                        if Self.loopTrace {
+                            print(String(format: "TRACE %@ [%.2f-%.2f] dropped: steady tone (chime)", source.label, startTime, endTime))
                         }
                         continue
                     }
@@ -1068,8 +1117,9 @@ final class TranscriptionEngine {
         // the script check refused. High numbers on a call with a clean
         // transcript mean the gates are earning their keep; a missing sentence
         // next to a high number means they are too tight.
-        Self.oslog.log("transcription gates: \(self.unvoicedChunksDropped, privacy: .public) unvoiced chunks and \(self.scriptMismatchesDropped, privacy: .public) wrong-script texts dropped")
+        Self.oslog.log("transcription gates: \(self.unvoicedChunksDropped, privacy: .public) unvoiced chunks, \(self.toneChunksDropped, privacy: .public) chime-like tones, and \(self.scriptMismatchesDropped, privacy: .public) wrong-script texts dropped")
         unvoicedChunksDropped = 0
+        toneChunksDropped = 0
         scriptMismatchesDropped = 0
         // Streaming backend: flush finals, then tear down. When the stream is
         // healthy, the chunk buffers only hold pre-connection audio — clear
@@ -1178,6 +1228,10 @@ final class TranscriptionEngine {
             .trimmingCharacters(in: .whitespaces)
         if normalized.isEmpty { return true }  // "." and friends, at any volume
         if creditPrefixes.contains(where: { normalized.hasPrefix($0) }) { return true }
+        // A lone "you" is Whisper's reflex for any sound it cannot place (the
+        // Meet chime decoded to it at 0.06 mean-abs, ten times the quiet
+        // floor). Nobody says "you" as a whole utterance; drop it at any volume.
+        if normalized == "you" { return true }
         // ponytail: 0.006 mean-abs ≈ room noise ceiling; speech runs 0.01+.
         // Tune here if quiet-talker reports come in.
         guard energy < 0.006 else { return false }

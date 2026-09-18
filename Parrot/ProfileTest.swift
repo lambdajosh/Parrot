@@ -269,6 +269,8 @@ enum ProfileTest {
         // Classic silence hallucinations on a quiet chunk — dropped.
         check("halluc: quiet 'Thank you.' dropped", TranscriptionEngine.isLikelyHallucination("Thank you.", energy: 0.002))
         check("halluc: quiet 'you' dropped", TranscriptionEngine.isLikelyHallucination("you", energy: 0.001))
+        check("halluc: loud lone 'you' dropped too (the chime)", TranscriptionEngine.isLikelyHallucination("You.", energy: 0.06))
+        check("halluc: 'you' inside speech kept", !TranscriptionEngine.isLikelyHallucination("Are you there?", energy: 0.06))
         check("halluc: quiet 'Okay.' dropped", TranscriptionEngine.isLikelyHallucination("Okay.", energy: 0.003))
         check("halluc: bare '.' dropped at any volume", TranscriptionEngine.isLikelyHallucination(".", energy: 0.05))
         // Real speech survives.
@@ -677,6 +679,26 @@ enum ProfileTest {
         check("voiced: speech with a noisy consonant run still clears the bar",
               Seg.voicedFraction(tone(4, hz: 150) + noise(6), floor: 0.002) >= Seg.minVoicedFraction)
         check("voiced: silence is zero", Seg.voicedFraction(roomNoise(5), floor: 0.002) == 0)
+
+        // The chime: a 480 Hz tone with a sharp attack and a one-second decay,
+        // shaped like the 2026-09-18 measurement (17 frames, 11 energetic).
+        var chime = [Float](repeating: 0, count: 17 * Seg.frame)
+        for i in 0..<(12 * Seg.frame) {
+            let t = Float(i) / 16_000
+            chime[5 * Seg.frame + i] = 0.09 * expf(-t * 3.2) * sin(2 * .pi * 480 * t)
+        }
+        check("tone: the join chime reads as a tone", Seg.looksLikeTone(chime, floor: 0.002))
+        check("tone: a chime still counts as voiced (why the tone gate exists)",
+              Seg.voicedFraction(chime, floor: 0.002) > 0.9)
+        // Speech: the pitch moves frame to frame, and consonants add noise.
+        var talk: [Float] = []
+        for f in 0..<15 {
+            let hz: Float = [110, 140, 170, 210, 250, 190, 150, 130][f % 8]
+            talk += tone(1, hz: hz) + (f % 5 == 4 ? noise(1, amp: 0.03) : [])
+        }
+        check("tone: speech with moving pitch is not a tone", !Seg.looksLikeTone(talk, floor: 0.002))
+        check("tone: a long steady hum is left to Whisper", !Seg.looksLikeTone(tone(45, hz: 200), floor: 0.002))
+        check("tone: too few frames to judge is not a tone", !Seg.looksLikeTone(tone(3, hz: 480), floor: 0.002))
         check("cold-start quiet speech is never eaten",
               Seg.nextCut(in: quietSpeech(10), draining: false,
                           floor: Seg.adaptiveFloor(for: quietSpeech(10)))
