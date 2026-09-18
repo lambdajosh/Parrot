@@ -97,7 +97,6 @@ struct SettingsView: View {
     @Query(sort: \Meeting.date, order: .reverse) private var recentMeetings: [Meeting]
     /// Bumped when an alias changes so the lists below re-read the directory.
     @State private var peopleVersion = 0
-    @State private var aliasEditingIdentity: String?
     @State private var newPersonIdentity = ""
     @State private var newPersonName = ""
     @State private var showFileImporter = false
@@ -125,6 +124,31 @@ struct SettingsView: View {
             + "\(customVocabulary)|\(echoCancellation)|\(transcriptionBackend)|\(polishAfterCall)|"
             + "\(copilotPace)|\(copilotWindow)|\(livePreview)|\(autoSaveTranscripts)|\(transcriptDirectory)|"
             + "\(calendarContextEnabled)|\(meetingReminders)|\(autoRecordMeetings)|\(launchAtLogin)"
+    }
+
+    /// One row per person Parrot knows, merged by identity: remembered
+    /// voices first bring their profile along, aliases and recent invite
+    /// addresses fill in the rest. Sorted by how the name reads.
+    private var peopleRows: [(identity: String, voice: SpeakerProfile?)] {
+        var byKey: [String: (identity: String, voice: SpeakerProfile?)] = [:]
+        var order: [String] = []
+        func add(_ identity: String, _ voice: SpeakerProfile?) {
+            let k = PeopleDirectory.canonical(identity)
+            guard !k.isEmpty else { return }
+            if byKey[k] == nil {
+                order.append(k)
+                byKey[k] = (identity, voice)
+            } else if let voice, byKey[k]?.voice == nil {
+                byKey[k]?.voice = voice
+            }
+        }
+        for profile in voiceProfiles { add(profile.name, profile) }
+        for identity in PeopleDirectory.aliases().keys { add(identity, nil) }
+        for identity in unnamedInviteeIdentities { add(identity, nil) }
+        return order.compactMap { byKey[$0] }.sorted {
+            PeopleDirectory.displayName(for: $0.identity)
+                .localizedStandardCompare(PeopleDirectory.displayName(for: $1.identity)) == .orderedAscending
+        }
     }
 
     /// Addresses from the last 30 meetings' invites that have no alias yet.
@@ -495,55 +519,19 @@ struct SettingsView: View {
                 if rememberVoices {
                     Toggle("Name voices automatically when confident", isOn: $autoNameVoices)
                     Hint("A very close match is named without asking and marked so you can undo it; looser matches stay one-click suggestions.")
-                    ForEach(voiceProfiles) { profile in
-                        HStack {
-                            // The name is a button: click it to give this
-                            // identity (often an address) a readable alias.
-                            PersonNameButton(identity: profile.name, editing: $aliasEditingIdentity)
-                            Text("heard \(profile.sampleCount)×")
-                                .foregroundStyle(Theme.Colors.ink2)
-                            Spacer()
-                            Button("Forget") {
-                                SpeakerProfileStore.delete(profile, in: modelContext)
-                            }
-                        }
-                        .font(Theme.Typography.caption)
-                    }
-                    if !voiceProfiles.isEmpty {
-                        Button("Forget All Voices") {
-                            SpeakerProfileStore.deleteAll(in: modelContext)
-                        }
-                    }
                 }
             }
 
             Section("People") {
-                Hint("Calendar invites often carry only an address. Give it a name here and every transcript, report, and export shows the name instead.")
-                let aliases = PeopleDirectory.aliases().sorted { $0.value.localizedStandardCompare($1.value) == .orderedAscending }
-                ForEach(aliases, id: \.key) { identity, name in
-                    HStack {
-                        PersonNameButton(identity: identity, editing: $aliasEditingIdentity)
-                        Text(identity)
-                            .foregroundStyle(Theme.Colors.ink2)
-                            .lineLimit(1)
-                        Spacer()
-                        Button("Forget") { PeopleDirectory.setAlias(nil, for: identity) }
-                    }
-                    .font(Theme.Typography.caption)
-                }
-                // Addresses seen in recent invites with no name yet: one click
-                // to name them, instead of remembering who is who.
-                let unnamed = unnamedInviteeIdentities
-                if !unnamed.isEmpty {
-                    ForEach(unnamed, id: \.self) { identity in
-                        HStack {
-                            PersonNameButton(identity: identity, editing: $aliasEditingIdentity)
-                            Text("from a recent invite, no name yet")
-                                .foregroundStyle(Theme.Colors.ink3)
-                            Spacer()
-                        }
+                Hint("Everyone Parrot knows: remembered voices, names you gave, and addresses from recent invites. Type a name on a row and press Return; it shows everywhere that person appears, past meetings included.")
+                let rows = peopleRows
+                if rows.isEmpty {
+                    Text("No one yet. People appear here after you name a voice or an invite arrives with an address.")
                         .font(Theme.Typography.caption)
-                    }
+                        .foregroundStyle(Theme.Colors.ink3)
+                }
+                ForEach(rows, id: \.identity) { row in
+                    PersonRow(identity: row.identity, voice: row.voice)
                 }
                 HStack(spacing: 8) {
                     TextField("email or identity", text: $newPersonIdentity)
@@ -561,6 +549,11 @@ struct SettingsView: View {
                               || newPersonName.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 .font(Theme.Typography.caption)
+                if rememberVoices, !voiceProfiles.isEmpty {
+                    Button("Forget All Voices") {
+                        SpeakerProfileStore.deleteAll(in: modelContext)
+                    }
+                }
             }
             .id(peopleVersion)
             .onReceive(NotificationCenter.default.publisher(for: .parrotPeopleChanged)) { _ in
@@ -965,69 +958,69 @@ struct PermissionStatusRow: View {
     }
 }
 
-/// A person's name as a button: click to set or change the alias for the
-/// identity behind it. Shows the alias when there is one, the identity
-/// otherwise, and the identity in grey next to an alias so both are visible.
-struct PersonNameButton: View {
+/// One person: the name as an editable field, the identity behind it in
+/// grey when they differ, the remembered voice if any. Editing is in place,
+/// no popover: type and press Return, or just click away, and the alias is
+/// saved. Typing the identity itself (or nothing) clears the alias.
+struct PersonRow: View {
     let identity: String
-    @Binding var editing: String?
+    let voice: SpeakerProfile?
+    @Environment(\.modelContext) private var modelContext
     @State private var draft = ""
+    @FocusState private var focused: Bool
 
-    private var isEditing: Binding<Bool> {
-        Binding(get: { editing == identity }, set: { if !$0 { editing = nil } })
-    }
+    private var alias: String? { PeopleDirectory.alias(for: identity) }
+    private var isEmail: Bool { PeopleDirectory.looksLikeEmail(identity) }
+    /// What the field starts with: the alias, or the identity when it already
+    /// reads as a name, or empty for a bare address.
+    private var baseline: String { alias ?? (isEmail ? "" : identity) }
+    private var dirty: Bool { draft.trimmingCharacters(in: .whitespaces) != baseline }
 
     var body: some View {
-        Button {
-            draft = PeopleDirectory.alias(for: identity) ?? ""
-            editing = identity
-        } label: {
-            HStack(spacing: 6) {
-                Text(PeopleDirectory.displayName(for: identity))
-                    .foregroundStyle(Theme.Colors.accent)
-                    .underline(pattern: .dot)
-                if PeopleDirectory.alias(for: identity) != nil,
-                   PeopleDirectory.canonical(identity) != PeopleDirectory.canonical(PeopleDirectory.displayName(for: identity)) {
-                    Text(identity)
-                        .foregroundStyle(Theme.Colors.ink3)
-                        .lineLimit(1)
-                }
+        HStack(spacing: 10) {
+            TextField(isEmail ? "Name for this address" : "Name", text: $draft)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 200)
+                .focused($focused)
+                .onSubmit(save)
+                .onChange(of: focused) { _, now in if !now { save() } }
+            if dirty {
+                Button("Save", action: save)
+                    .controlSize(.small)
             }
-        }
-        .buttonStyle(.plain)
-        .help("Set the name shown for \(identity)")
-        .popover(isPresented: isEditing, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Name for \(identity)")
-                    .font(Theme.Typography.caption)
-                    .fontWeight(.semibold)
-                TextField("e.g. Andrew Laski", text: $draft)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { save() }
-                HStack {
-                    Button("Save") { save() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
-                    if PeopleDirectory.alias(for: identity) != nil {
-                        Button("Clear") {
-                            PeopleDirectory.setAlias(nil, for: identity)
-                            editing = nil
-                        }
-                    }
-                    Spacer()
-                }
-                Text("Applies everywhere this identity appears, in past meetings too.")
-                    .font(Theme.Typography.caption)
+            if isEmail || alias != nil {
+                Text(identity)
+                    .foregroundStyle(Theme.Colors.ink2)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            if let voice {
+                Text("voice heard \(voice.sampleCount)×")
+                    .foregroundStyle(Theme.Colors.ink2)
+                Button("Forget Voice") { SpeakerProfileStore.delete(voice, in: modelContext) }
+                    .controlSize(.small)
+            } else {
+                Text("no voice yet")
                     .foregroundStyle(Theme.Colors.ink3)
             }
-            .padding(12)
-            .frame(width: 300)
+            if alias != nil {
+                Button("Clear Name") { PeopleDirectory.setAlias(nil, for: identity) }
+                    .controlSize(.small)
+            }
         }
+        .font(Theme.Typography.caption)
+        .onAppear { draft = baseline }
     }
 
     private func save() {
-        PeopleDirectory.setAlias(draft, for: identity)
-        editing = nil
+        let trimmed = draft.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty || PeopleDirectory.canonical(trimmed) == PeopleDirectory.canonical(identity) {
+            if alias != nil { PeopleDirectory.setAlias(nil, for: identity) }
+            draft = baseline
+        } else if trimmed != alias {
+            PeopleDirectory.setAlias(trimmed, for: identity)
+        }
     }
 }
 
