@@ -8,16 +8,16 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 | File | L | Purpose |
 |---|---|---|
 | `Parrot/ParrotApp.swift` | 181 | `@main`; parses CLI harness flags before the SwiftUI `App` starts |
-| `Parrot/ProfileTest.swift` | 1371 | `--profile-test`: headless logic harness, ~60 assertions |
+| `Parrot/ProfileTest.swift` | 1407 | `--profile-test`: headless logic harness, ~60 assertions |
 | `Parrot/SnapshotTool.swift` | 917 | Offscreen PNG renderers + transcribe/analyze harnesses |
 
 ## Models (SwiftData `@Model` + Codable values)
 
 | File | L | Purpose |
 |---|---|---|
-| `Models/Meeting.swift` | 435 | `Meeting` record + `MeetingStatus` lifecycle + per-speaker names/embeddings + truncate/split |
+| `Models/Meeting.swift` | 451 | `Meeting` record + `MeetingStatus` lifecycle + per-speaker names/embeddings + truncate/split |
 | `Models/ScheduledMeeting.swift` | 127 | Calendar event value type: video-link detection, Meet boilerplate stripping, current/next matching, copilot brief |
-| `Models/PeopleDirectory.swift` | 62 | Identity (email) → display-name aliases in UserDefaults; every name display resolves through it |
+| `Models/PeopleDirectory.swift` | 127 | Identity (email) → display-name aliases in UserDefaults; every name display resolves through it |
 | `Models/TranscriptSegment.swift` | 34 | One diarized, timestamped utterance |
 | `Models/Insight.swift` | 60 | `CallInsight` (stored) and `Insight` (live value) |
 | `Models/CallProfile.swift` | 92 | Per-call-type prompt config: kinds, sentiment gauges |
@@ -51,7 +51,7 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 | `Services/PermissionFlow.swift` | 150 | System Audio (15+) / Screen Recording (14) + microphone grant flows |
 | `Services/UpdateChecker.swift` | 103 | Daily GitHub release poll, feeds the update banner |
 | `Services/BugReport.swift` | 120 | Pre-filled GitHub issue: diagnostics, own-window screenshot, URL builder |
-| `Services/SpeakerProfileStore.swift` | 132 | Voiceprint matching (cosine ≥ 0.7), remember/forget for named voices |
+| `Services/SpeakerProfileStore.swift` | 156 | Voiceprint matching (cosine ≥ 0.7), remember/forget for named voices |
 
 ## Views
 
@@ -66,7 +66,7 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 | `Views/BugReportSheet.swift` | 150 | Bug/idea report form + the corner ladybug button |
 | `Views/ReportContentView.swift` | 267 | Report section cards, talk-ratio bar, prose blocks |
 | `Views/SentimentStripView.swift` | 60 | Sentiment gauge strip |
-| `Views/SettingsView.swift` | 1149 | All settings sections, provider keys, KB docs |
+| `Views/SettingsView.swift` | 1167 | All settings sections, provider keys, KB docs |
 | `Views/ProfilesSettingsView.swift` | 689 | Call-profile editor: kinds, gauges, icon picker |
 | `Views/OnboardingView.swift` | 340 | Permission walkthrough + model choice |
 | `Views/OllamaModelStatusView.swift` | 136 | Local model presence/pull status |

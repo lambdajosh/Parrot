@@ -763,7 +763,7 @@ struct MeetingDetailView: View {
                     if rememberVoices,
                        let embedding = meeting.speakerEmbeddings[label],
                        let match = SpeakerProfileStore.match(embedding, in: modelContext,
-                                                             preferring: Set(meeting.attendeeNames)) {
+                                                             preferring: meeting.inviteeNameSet) {
                         Button {
                             confirmVoice(label: label, name: match.name)
                         } label: {
@@ -947,7 +947,7 @@ struct SpeakerNamePopover: View {
         guard rememberVoices, meeting.speakerNames[label] == nil,
               let embedding = meeting.speakerEmbeddings[label], !embedding.isEmpty
         else { return nil }
-        return SpeakerProfileStore.match(embedding, in: modelContext, preferring: Set(meeting.attendeeNames))
+        return SpeakerProfileStore.match(embedding, in: modelContext, preferring: meeting.inviteeNameSet)
     }
 
     private func assign(_ finalName: String) {

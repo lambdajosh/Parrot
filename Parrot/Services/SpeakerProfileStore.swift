@@ -57,7 +57,8 @@ enum SpeakerProfileStore {
         let cleared = profiles
             .map { (name: $0.name, similarity: cosine(embedding, $0.embedding)) }
             .filter { $0.similarity >= suggestThreshold }
-        let pool = cleared.filter { invitees.contains($0.name) }
+        let invited = Set(invitees.map { $0.lowercased() })
+        let pool = cleared.filter { invited.contains($0.name.lowercased()) }
         return (pool.isEmpty ? cleared : pool).max { $0.similarity < $1.similarity }
     }
 
@@ -85,8 +86,9 @@ enum SpeakerProfileStore {
         var usedNames = takenNames
         // Invited people are considered first, then by closeness; the 0.85
         // floor still applies to everyone.
+        let invited = Set(invitees.map { $0.lowercased() })
         let ranked = candidates.sorted { a, b in
-            let ai = invitees.contains(a.name), bi = invitees.contains(b.name)
+            let ai = invited.contains(a.name.lowercased()), bi = invited.contains(b.name.lowercased())
             if ai != bi { return ai }
             return a.similarity > b.similarity
         }
@@ -116,6 +118,28 @@ enum SpeakerProfileStore {
             existing.updatedAt = .now
         } else {
             context.insert(SpeakerProfile(name: name, embedding: embedding))
+        }
+        try? context.save()
+    }
+
+    /// Renames a remembered voice. If a voice with the new name already
+    /// exists the two are one person: their samples are merged into the
+    /// existing profile (weighted running mean) and the renamed one goes.
+    static func rename(_ profile: SpeakerProfile, to name: String, in context: ModelContext) {
+        let target = name.trimmingCharacters(in: .whitespaces)
+        guard !target.isEmpty, target != profile.name else { return }
+        if let other = profiles(in: context).first(where: { $0.name.lowercased() == target.lowercased() && $0.id != profile.id }) {
+            let a = other.embedding, b = profile.embedding
+            if a.count == b.count, !a.isEmpty {
+                let na = Float(other.sampleCount), nb = Float(profile.sampleCount)
+                other.embedding = a.indices.map { (a[$0] * na + b[$0] * nb) / (na + nb) }
+                other.sampleCount += profile.sampleCount
+                other.updatedAt = .now
+            }
+            context.delete(profile)
+        } else {
+            profile.name = target
+            profile.updatedAt = .now
         }
         try? context.save()
     }
