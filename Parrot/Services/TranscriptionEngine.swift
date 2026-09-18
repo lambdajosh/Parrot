@@ -61,6 +61,12 @@ final class TranscriptionEngine {
     /// preview bubble under the right speaker (Me right, Them left). nil
     /// whenever `currentText` is empty.
     private(set) var currentSpeaker: AudioSource?
+    /// Chunks the acoustic gate refused this session, and committed texts the
+    /// script check refused; logged at stop so a bad call can be read back.
+    @ObservationIgnored private var unvoicedChunksDropped = 0
+    @ObservationIgnored private var scriptMismatchesDropped = 0
+    static let oslog = Logger(subsystem: "com.uygar.parrot", category: "transcription")
+
     /// True while live audio carries speech-level energy. Drives the typing
     /// bubble on chunked backends (Groq, local Whisper) that have no interim
     /// stream — the bubble shows dots while someone talks, text when interims
@@ -395,6 +401,42 @@ final class TranscriptionEngine {
         /// Keep 100 ms of the pause on the cut so Whisper hears the word release.
         static let padFrames = 1
 
+        /// Zero-crossing rate (crossings per sample) below which a 100 ms
+        /// frame counts as voiced. Voiced speech at 16 kHz sits roughly at
+        /// 0.02–0.12 (a 150 Hz voice crosses ~0.02, harmonics raise it);
+        /// keyboard clicks and broadband noise sit at 0.3–0.5. Set from those
+        /// signal-processing figures and the synthetic harness cases, not from
+        /// recordings of real typing yet; the per-chunk trace prints the
+        /// measured fraction so a real call can tune it.
+        static let voicedZeroCrossingCeiling: Float = 0.15
+        /// Share of the energetic frames in a chunk that must be voiced for it
+        /// to be decoded at all. Any real utterance longer than a syllable has
+        /// vowels, so this is a low bar for speech and a wall for clatter.
+        static let minVoicedFraction: Float = 0.2
+
+        /// Fraction of frames at or above `floor` whose zero-crossing rate is
+        /// below the voiced ceiling. 0 for an all-silent chunk. The rate is
+        /// measured over the samples that carry signal (above `ditherFloor`):
+        /// a frame that is one 25 ms click and then near-silence would
+        /// otherwise score low simply because flat samples never cross zero.
+        static func voicedFraction(_ buffer: [Float], floor: Float) -> Float {
+            let frames = buffer.count / frame
+            var energetic = 0, voiced = 0
+            for i in 0..<frames where frameEnergy(buffer, i) >= floor {
+                energetic += 1
+                var crossings = 0, active = 0
+                var lastPositive: Bool?
+                for j in (i * frame)..<((i + 1) * frame) where abs(buffer[j]) >= ditherFloor {
+                    active += 1
+                    let positive = buffer[j] >= 0
+                    if let last = lastPositive, last != positive { crossings += 1 }
+                    lastPositive = positive
+                }
+                if active > 0, Float(crossings) / Float(active) < voicedZeroCrossingCeiling { voiced += 1 }
+            }
+            return energetic == 0 ? 0 : Float(voiced) / Float(energetic)
+        }
+
         /// One polling decision: discard `dropLeading` samples (silence — the
         /// consumed counter still advances so timestamps stay absolute), then
         /// cut `take` samples for decoding; `take == nil` means keep buffering.
@@ -604,7 +646,9 @@ final class TranscriptionEngine {
                             }
                             let energy = pending.isEmpty ? 0
                                 : pending.reduce(into: Float(0)) { $0 += abs($1) } / Float(pending.count)
-                            if energy > floor, let whisperKit = self.whisperKit {
+                            if energy > floor,
+                               Segmenter.voicedFraction(pending, floor: floor) >= Segmenter.minVoicedFraction,
+                               let whisperKit = self.whisperKit {
                                 // No interim callback here on purpose: each preview
                                 // re-decodes from the utterance's start, so streaming
                                 // its words made the bubble restart the same sentence
@@ -653,6 +697,20 @@ final class TranscriptionEngine {
                     let energy = chunk.reduce(into: Float(0)) { $0 += abs($1) } / Float(chunk.count)
                     guard energy > floor else { continue }
 
+                    // Acoustic gate: energy alone lets keyboard clatter through
+                    // (loud, bursty, above any floor), and Whisper narrates it
+                    // as "Thank you" or a subtitle credit. Clatter has almost
+                    // no voiced frames; speech always does.
+                    let voiced = Segmenter.voicedFraction(chunk, floor: floor)
+                    if voiced < Segmenter.minVoicedFraction {
+                        self.unvoicedChunksDropped += 1
+                        if Self.loopTrace {
+                            print(String(format: "TRACE %@ [%.2f-%.2f] dropped: voiced %.2f < %.2f",
+                                         source.label, startTime, endTime, voiced, Segmenter.minVoicedFraction))
+                        }
+                        continue
+                    }
+
                     // Boost quiet-but-real chunks to a healthy level before
                     // every decode. `energy` above stays raw on purpose: the
                     // hallucination filter reads the room, not the boosted copy.
@@ -696,9 +754,13 @@ final class TranscriptionEngine {
                         }
                         if usable { return pieces }
                         if Self.loopTrace { print("TRACE \(source.label) glossary decode unusable — retrying bare") }
+                        // Drop only the glossary. The prefill stays: it is what
+                        // carries the chosen language token, and without it the
+                        // retry free-ran on non-speech chunks and produced
+                        // Russian and French subtitle credits in an English
+                        // call (2026-09-17 store, every one a 1–2 s "Me" chunk).
                         var bare = decodeOptions
                         bare.promptTokens = nil
-                        bare.usePrefillPrompt = false
                         return try await decode(bare)
                     }
 
@@ -735,6 +797,13 @@ final class TranscriptionEngine {
                             // "Okay.") flooded real transcripts — drop them
                             // when the chunk was near-silent.
                             guard !Self.isLikelyHallucination(cleaned, energy: energy) else { continue }
+                            // A forced language cannot come back in another
+                            // alphabet; when it does, the decoder was guessing.
+                            if Self.scriptMismatch(cleaned, language: language) {
+                                self.scriptMismatchesDropped += 1
+                                if Self.loopTrace { print("TRACE \(source.label) dropped: script mismatch for \(language ?? "auto"): \(cleaned)") }
+                                continue
+                            }
                             // Prompt leak: the glossary prompt comes back as
                             // "transcription", alone or prefixed onto real
                             // speech — keep the speech, drop only the echo.
@@ -942,6 +1011,13 @@ final class TranscriptionEngine {
     // is a wall-clock cap + surfaced timeout.
     @MainActor
     func stopTranscribing() async {
+        // One line per call for the unified log: how much the acoustic gate and
+        // the script check refused. High numbers on a call with a clean
+        // transcript mean the gates are earning their keep; a missing sentence
+        // next to a high number means they are too tight.
+        Self.oslog.log("transcription gates: \(self.unvoicedChunksDropped, privacy: .public) unvoiced chunks and \(self.scriptMismatchesDropped, privacy: .public) wrong-script texts dropped")
+        unvoicedChunksDropped = 0
+        scriptMismatchesDropped = 0
         // Streaming backend: flush finals, then tear down. When the stream is
         // healthy, the chunk buffers only hold pre-connection audio — clear
         // them so the drain can't re-emit the call's first words at the end.
@@ -979,7 +1055,40 @@ final class TranscriptionEngine {
         "you", "okay", "ok", "thank you", "thanks", "bye", "bye-bye",
         "thank you for watching", "thanks for watching", "hmm", "mm-hmm",
         "uh", "um", "the end", "subtitles by", "1", "2",
+        // The same reflexes in the languages Whisper drifts into on noise.
+        "спасибо", "спасибо за просмотр", "merci", "gracias", "danke", "vielen dank",
+        "obrigado", "grazie", "teşekkürler", "teşekkür ederim",
     ]
+
+    /// Subtitle-credit boilerplate Whisper learned from captioned video. No one
+    /// says these on a call, so they are dropped at any volume; matched as
+    /// prefixes because the credit usually carries a name after it.
+    static let creditPrefixes: [String] = [
+        "продолжение следует", "субтитры", "sous-titr", "sous titr", "untertitel",
+        "amara.org", "subtitles by", "subtitled by", "captions by", "transcribed by",
+        "字幕", "ご視聴ありがとう", "please subscribe", "like and subscribe",
+    ]
+
+    /// Scripts a forced language can legitimately come back in. Whisper
+    /// decoding under a forced language token cannot produce another
+    /// alphabet for real speech, so a committed text whose letters are mostly
+    /// from a different script is a decoder guess on non-speech and is
+    /// dropped. Auto-detect (nil) never triggers this.
+    static func scriptMismatch(_ text: String, language: String?) -> Bool {
+        guard let language else { return false }
+        let latin: Set<String> = ["en", "tr", "es", "de", "fr", "it", "pt", "nl"]
+        let cyrillic: Set<String> = ["ru", "uk", "bg", "sr", "mk", "be"]
+        func inLatin(_ c: Unicode.Scalar) -> Bool { c.value < 0x0250 || (0x1E00...0x1EFF).contains(c.value) }
+        func inCyrillic(_ c: Unicode.Scalar) -> Bool { (0x0400...0x052F).contains(c.value) }
+        let letters = text.unicodeScalars.filter { $0.properties.isAlphabetic }
+        guard letters.count >= 3 else { return false }
+        let expected: (Unicode.Scalar) -> Bool
+        if latin.contains(language) { expected = inLatin }
+        else if cyrillic.contains(language) { expected = inCyrillic }
+        else { return false }
+        let matching = letters.filter(expected).count
+        return Float(matching) / Float(letters.count) < 0.5
+    }
 
     // MARK: Why there is no confidence-based noise filter
     //
@@ -1015,6 +1124,7 @@ final class TranscriptionEngine {
             .trimmingCharacters(in: CharacterSet(charactersIn: ".,!?…-—"))
             .trimmingCharacters(in: .whitespaces)
         if normalized.isEmpty { return true }  // "." and friends, at any volume
+        if creditPrefixes.contains(where: { normalized.hasPrefix($0) }) { return true }
         // ponytail: 0.006 mean-abs ≈ room noise ceiling; speech runs 0.01+.
         // Tune here if quiet-talker reports come in.
         guard energy < 0.006 else { return false }
