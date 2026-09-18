@@ -69,10 +69,16 @@ actually lists Parrot with the toggle on.</p>
 
 <h2>Weird text in a language nobody spoke</h2>
 <p>Loud non-speech sounds (typing right next to the mic is the usual culprit)
-can make Whisper hallucinate a confident sentence, sometimes in a random
-language when auto-detect is on. Setting your language explicitly in
-Settings → Transcription helps a lot. Getting your keyboard out of the mic's
-face helps more. We're working on filtering these out automatically.</p>
+can make Whisper hallucinate a confident sentence: "Thank you", a subtitle
+credit, sometimes in a language nobody spoke. Parrot now refuses to decode a
+chunk that has no voiced sound in it (clatter has none, speech always does),
+drops the known subtitle-credit boilerplate at any volume, and, when you have
+set a language in Settings → Transcription, drops any text that comes back in
+a different alphabet. Setting your language is still worth doing: it also
+keeps the custom-vocabulary retry from guessing the language on its own,
+which was the cause of Russian and French lines in an English call. After a
+bad call, the unified log has one "transcription gates" line per recording
+saying how much was filtered.</p>
 
 <h2>A recording got interrupted</h2>
 <p>Crash, force-quit, power loss: on the next launch Parrot finds the

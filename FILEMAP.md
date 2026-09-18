@@ -8,7 +8,7 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 | File | L | Purpose |
 |---|---|---|
 | `Parrot/ParrotApp.swift` | 181 | `@main`; parses CLI harness flags before the SwiftUI `App` starts |
-| `Parrot/ProfileTest.swift` | 1297 | `--profile-test`: headless logic harness, ~60 assertions |
+| `Parrot/ProfileTest.swift` | 1353 | `--profile-test`: headless logic harness, ~60 assertions |
 | `Parrot/SnapshotTool.swift` | 917 | Offscreen PNG renderers + transcribe/analyze harnesses |
 
 ## Models (SwiftData `@Model` + Codable values)
@@ -34,7 +34,7 @@ tree. Line counts are rough — they flag which files are worth reading whole.
 | `Services/AudioCaptureManager.swift` | 1135 | System audio (tap on 15+, SCK on 14.x/rescue) + mic tap, buffer conversion |
 | `Services/SystemAudioTap.swift` | 250 | Core Audio process tap: audio-only capture, no Screen Recording (macOS 15+) |
 | `Services/EchoCanceller.swift` | 138 | Swift wrapper over vendored SpeexDSP AEC |
-| `Services/TranscriptionEngine.swift` | 947 | On-device WhisperKit; `AudioSource` routing; live preview decode |
+| `Services/TranscriptionEngine.swift` | 1141 | On-device WhisperKit; `AudioSource` routing; live preview decode |
 | `Services/CloudTranscription.swift` | 355 | Opt-in Groq (batch) and Deepgram (streaming) backends + WAV encode |
 | `Services/AudioSplitter.swift` | 85 | Cuts one PCM recording into two .caf halves at a time; sibling part naming |
 | `Services/CalendarService.swift` | 110 | EventKit reader (opt-in): events around now, permission flow, `ScheduledMeeting` mapping |

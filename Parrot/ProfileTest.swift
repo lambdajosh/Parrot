@@ -275,6 +275,28 @@ enum ProfileTest {
         check("halluc: real sentence kept", !TranscriptionEngine.isLikelyHallucination("Can you hear me?", energy: 0.002))
         check("halluc: loud 'Okay.' kept", !TranscriptionEngine.isLikelyHallucination("Okay.", energy: 0.02))
         check("halluc: loud 'Thank you.' kept", !TranscriptionEngine.isLikelyHallucination("Thank you.", energy: 0.03))
+        // What the 2026-09-17 call actually produced on the muted mic.
+        check("halluc: subtitle credit dropped at any volume",
+              TranscriptionEngine.isLikelyHallucination("Продолжение следует...", energy: 0.05)
+                && TranscriptionEngine.isLikelyHallucination("Субтитры сделал DimaTorzok", energy: 0.05)
+                && TranscriptionEngine.isLikelyHallucination("Sous-titrage Société Radio-Canada", energy: 0.05))
+        check("halluc: quiet foreign thank-you dropped, loud kept",
+              TranscriptionEngine.isLikelyHallucination("Спасибо.", energy: 0.002)
+                && !TranscriptionEngine.isLikelyHallucination("Merci.", energy: 0.03))
+        check("halluc: 'subscribe' mid-sentence is not a credit",
+              !TranscriptionEngine.isLikelyHallucination("We subscribed the Zendesk email to that group.", energy: 0.02))
+
+        // Forced English cannot come back in Cyrillic; auto-detect can.
+        check("script: Cyrillic under forced English is a mismatch",
+              TranscriptionEngine.scriptMismatch("Продолжение следует", language: "en"))
+        check("script: English under forced English passes",
+              !TranscriptionEngine.scriptMismatch("Let's follow up next week.", language: "en"))
+        check("script: accents and names pass as Latin",
+              !TranscriptionEngine.scriptMismatch("Gürkan and Zoë joined.", language: "tr"))
+        check("script: Latin under forced Russian is a mismatch",
+              TranscriptionEngine.scriptMismatch("Thank you for watching", language: "ru"))
+        check("script: auto-detect never trips", !TranscriptionEngine.scriptMismatch("Продолжение", language: nil))
+        check("script: too short to judge passes", !TranscriptionEngine.scriptMismatch("ок", language: "en"))
 
         // Glossary echo stripping: a prompt leak PREFIXING real speech must not
         // take the speech with it (the live segment-drop of 2026-08-01).
@@ -603,6 +625,40 @@ enum ProfileTest {
         // the flat-window rule keeps it buffering until a pause bounds it.
         check("flat quiet-speech window reads as speech",
               Seg.adaptiveFloor(for: quietSpeech(10)) == Seg.ditherFloor)
+
+        // The voiced gate: a hum with harmonics passes, clatter and hiss do not.
+        func tone(_ frames: Int, hz: Float, amp: Float = 0.05) -> [Float] {
+            (0..<(frames * Seg.frame)).map { i in
+                let t = Float(i) / 16_000
+                // Fundamental plus two harmonics, the rough shape of a vowel.
+                return amp * (sin(2 * .pi * hz * t) + 0.5 * sin(4 * .pi * hz * t) + 0.25 * sin(6 * .pi * hz * t))
+            }
+        }
+        func noise(_ frames: Int, amp: Float = 0.05) -> [Float] {
+            var g = SystemRandomNumberGenerator()
+            return (0..<(frames * Seg.frame)).map { _ in amp * (Float.random(in: -1...1, using: &g)) }
+        }
+        func clicks(_ frames: Int) -> [Float] {
+            // Room dither with a sharp broadband burst every 100 ms: typing.
+            var g = SystemRandomNumberGenerator()
+            var out = (0..<(frames * Seg.frame)).map { _ in 0.0002 * Float.random(in: -1...1, using: &g) }
+            for f in 0..<frames {
+                for k in 0..<400 { out[f * Seg.frame + k] = 0.2 * Float.random(in: -1...1, using: &g) }
+            }
+            return out
+        }
+        check("voiced: a low voice is voiced", Seg.voicedFraction(tone(10, hz: 120), floor: 0.002) > 0.9)
+        check("voiced: a high voice is still voiced", Seg.voicedFraction(tone(10, hz: 300), floor: 0.002) > 0.9)
+        check("voiced: white noise is not", Seg.voicedFraction(noise(10), floor: 0.002) < 0.05)
+        check("voiced: keyboard clicks are not", Seg.voicedFraction(clicks(10), floor: 0.002) < Seg.minVoicedFraction)
+        // The flat-silence variant that fooled the first version: a burst in
+        // an otherwise DC-flat frame must still read as clatter.
+        var flatClicks = [Float](repeating: 0.0001, count: 10 * Seg.frame)
+        for f in 0..<10 { for k in 0..<400 { flatClicks[f * Seg.frame + k] = 0.2 * Float.random(in: -1...1) } }
+        check("voiced: a click in a flat frame is not voiced", Seg.voicedFraction(flatClicks, floor: 0.002) < Seg.minVoicedFraction)
+        check("voiced: speech with a noisy consonant run still clears the bar",
+              Seg.voicedFraction(tone(4, hz: 150) + noise(6), floor: 0.002) >= Seg.minVoicedFraction)
+        check("voiced: silence is zero", Seg.voicedFraction(roomNoise(5), floor: 0.002) == 0)
         check("cold-start quiet speech is never eaten",
               Seg.nextCut(in: quietSpeech(10), draining: false,
                           floor: Seg.adaptiveFloor(for: quietSpeech(10)))
