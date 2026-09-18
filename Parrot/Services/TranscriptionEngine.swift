@@ -663,7 +663,8 @@ final class TranscriptionEngine {
                                 nextPreviewAt[source] = Date().addingTimeInterval(
                                     max(previewBase, Date().timeIntervalSince(decodeStarted) * 2))
                                 let raw = Self.cleaned(result.map(\.text).joined(separator: " "))
-                                let display = self.glossaryActive ? (Self.strippingGlossaryEcho(raw) ?? "") : raw
+                                let display = Self.strippingSpeakerLabels(
+                                    self.glossaryActive ? (Self.strippingGlossaryEcho(raw, terms: self.glossaryTerms) ?? "") : raw)
                                 if Self.loopTrace {
                                     // Printed even when empty: "gate never passed"
                                     // and "decoded to nothing" need different fixes.
@@ -750,7 +751,7 @@ final class TranscriptionEngine {
                         // loses its spelling bias.
                         let usable = pieces.contains { piece in
                             let t = Self.cleaned(piece.text)
-                            return !t.isEmpty && Self.strippingGlossaryEcho(t) != nil
+                            return !t.isEmpty && Self.strippingGlossaryEcho(t, terms: self.glossaryTerms) != nil
                         }
                         if usable { return pieces }
                         if Self.loopTrace { print("TRACE \(source.label) glossary decode unusable — retrying bare") }
@@ -807,8 +808,10 @@ final class TranscriptionEngine {
                             // Prompt leak: the glossary prompt comes back as
                             // "transcription", alone or prefixed onto real
                             // speech — keep the speech, drop only the echo.
-                            guard let text = self.glossaryActive
-                                ? Self.strippingGlossaryEcho(cleaned) : cleaned else { continue }
+                            guard let unlabeled = self.glossaryActive
+                                ? Self.strippingGlossaryEcho(cleaned, terms: self.glossaryTerms) : cleaned else { continue }
+                            let text = Self.strippingSpeakerLabels(unlabeled)
+                            guard !text.isEmpty else { continue }
 
                             await MainActor.run {
                                 // Clear the interim line — the text lives in the
@@ -905,6 +908,8 @@ final class TranscriptionEngine {
 
     /// True while a glossary prompt is active — gates the echo filter below.
     private var glossaryActive = false
+    /// The vocabulary terms as primed, for echo stripping.
+    private var glossaryTerms: [String] = []
 
     /// Prime Whisper with the user's custom glossary so proper nouns aren't
     /// mangled — shared by the live loop and file import. Fed as an initial
@@ -919,12 +924,17 @@ final class TranscriptionEngine {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         guard !terms.isEmpty else { return }
-        let promptText = "Glossary: " + terms.joined(separator: ", ") + "."
+        // A bare list, deliberately not "Glossary: …". A "Label: text" prompt
+        // teaches the decoder that shape, and on the 2026-09-18 call it began
+        // inventing speaker labels ("William Kramp: Oh, OK…") in the middle
+        // of real speech. Plain proper nouns bias spelling without a format.
+        let promptText = terms.joined(separator: ", ") + "."
         let tokens = tokenizer.encode(text: " " + promptText)
             .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
         options.promptTokens = tokens
         options.usePrefillPrompt = true
         glossaryActive = true
+        glossaryTerms = terms
     }
 
     /// Whisper leaks the initial prompt back as fake transcription on silent or
@@ -945,15 +955,58 @@ final class TranscriptionEngine {
     /// LIVELOOP_VOCAB reproduces it deterministically). Utterance-sized
     /// segments made that loss a whole sentence, so: strip the leaked echo
     /// sentence, keep what follows. nil = pure echo, drop the segment.
-    static func strippingGlossaryEcho(_ text: String) -> String? {
-        guard isGlossaryEcho(text) else { return text }
-        // The leak is one short "Glossary: …" sentence; cut through its
-        // terminator and keep any real speech behind it.
-        if let echo = text.range(of: #"^[^.!?]{0,120}[.!?]+"#, options: .regularExpression) {
-            let rest = String(text[echo.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            return rest.isEmpty ? nil : rest
+    static func strippingGlossaryEcho(_ text: String, terms: [String] = []) -> String? {
+        var rest = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let separators = " ,.;:!?\n"
+        func dropLeadingSeparators() { rest = String(rest.drop(while: { separators.contains($0) })) }
+        // Legacy label from the old prompt shape, when the decoder echoes it.
+        var hadLabel = false
+        if let label = rest.range(of: #"^glossary\s*[:,.]?\s*"#, options: [.regularExpression, .caseInsensitive]) {
+            rest.removeSubrange(label)
+            hadLabel = true
+        } else if terms.isEmpty {
+            return text
         }
-        return nil
+        // Then any run of the primed terms with their separators. Only the
+        // terms go: the first real sentence used to be cut with them
+        // ("Glossary: So I have a ticket out…" lost its whole first clause).
+        var stripped = true
+        while stripped {
+            stripped = false
+            let lower = rest.lowercased()
+            for term in terms.sorted(by: { $0.count > $1.count }) where lower.hasPrefix(term.lowercased()) {
+                rest = String(rest.dropFirst(term.count))
+                dropLeadingSeparators()
+                stripped = true
+                break
+            }
+        }
+        // Without the term list (older callers), a labelled leak is judged by
+        // shape: a first "sentence" of up to four words is a term list and
+        // goes; anything longer is speech and stays.
+        if hadLabel, terms.isEmpty {
+            let end = rest.range(of: #"[.!?]"#, options: .regularExpression)?.upperBound ?? rest.endIndex
+            let head = String(rest[..<end])
+            if head.split(whereSeparator: { $0 == " " }).count <= 4 {
+                rest = String(rest[end...])
+                dropLeadingSeparators()
+            }
+        }
+        if rest.isEmpty { return nil }
+        // Nothing was a leak: hand back the original untouched.
+        return rest.count == text.trimmingCharacters(in: .whitespacesAndNewlines).count ? text : rest
+    }
+
+    /// Whisper sometimes writes a transcript in caption style, inventing
+    /// "Name: " labels in front of sentences it never heard a name for. Real
+    /// speech almost never contains a capitalised one-to-three-word label
+    /// followed by a colon, so those are removed at the start of the text and
+    /// after each sentence end. Times ("10:30") and lowercase words stay.
+    static func strippingSpeakerLabels(_ text: String) -> String {
+        let label = #"[A-Z][A-Za-z'&.\-]*(?: [A-Z][A-Za-z'&.\-]*){0,2}:\s+"#
+        var out = text.replacingOccurrences(of: "^" + label, with: "", options: .regularExpression)
+        out = out.replacingOccurrences(of: #"([.!?])\s+"# + label, with: "$1 ", options: .regularExpression)
+        return out.trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: - File Import (whole-file, on-device)

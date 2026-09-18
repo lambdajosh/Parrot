@@ -311,6 +311,24 @@ enum ProfileTest {
         check("echo: normal speech passes untouched",
               TE.strippingGlossaryEcho("The glossary says nothing about churn.")
                 == "The glossary says nothing about churn.")
+        // The new prompt has no label; only the primed terms are stripped, and
+        // the first real sentence is never lost with them (2026-09-18 call).
+        check("echo: bare-term leak stripped",
+              TE.strippingGlossaryEcho("Yuval, AQ. So I have a ticket out.", terms: ["Yuval", "AQ"]) == "So I have a ticket out.")
+        check("echo: pure bare-term leak drops",
+              TE.strippingGlossaryEcho("Yuval, AQ.", terms: ["Yuval", "AQ"]) == nil)
+        check("echo: legacy label with speech keeps the speech",
+              TE.strippingGlossaryEcho("Glossary: So I have a ticket out, but that should be done. Then we sort.", terms: ["Yuval", "AQ"])
+                == "So I have a ticket out, but that should be done. Then we sort.")
+        check("echo: a spoken term mid-sentence is untouched",
+              TE.strippingGlossaryEcho("Ask Yuval about AQ tomorrow.", terms: ["Yuval", "AQ"]) == "Ask Yuval about AQ tomorrow.")
+        check("labels: invented speaker labels are removed",
+              TE.strippingSpeakerLabels("William Kramp: Oh, OK, I think we talked before. William Kramp: Some sort of rolled up metrics.")
+                == "Oh, OK, I think we talked before. Some sort of rolled up metrics.")
+        check("labels: times and lowercase words survive",
+              TE.strippingSpeakerLabels("Meet at 10:30. we said: fine.") == "Meet at 10:30. we said: fine.")
+        check("labels: plain speech untouched",
+              TE.strippingSpeakerLabels("Chris & Issues. Were you able to code that one up?") == "Chris & Issues. Were you able to code that one up?")
         check("echo: multi-sentence tail kept whole",
               TE.strippingGlossaryEcho("Glossary: A, B. First point. Second point.")
                 == "First point. Second point.")
